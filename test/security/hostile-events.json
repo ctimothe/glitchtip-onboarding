@@ -1,0 +1,33 @@
+[
+  {
+    "name": "secrets-in-non-display-fields",
+    "payload": { "action": "triggered", "data": { "issue": { "id": "9001", "title": "Checkout failed", "project": { "slug": "shop" }, "permalink": "https://errors.example.test/issues/9001/?access_token=canaryQueryTokenb82e" } } },
+    "issue": { "id": "9001", "title": "Checkout failed", "project": { "slug": "shop" }, "permalink": "https://errors.example.test/issues/9001/?access_token=canaryQueryTokenb82e#Bearer canaryBearerTok3n9f2a7c1d" },
+    "event": {
+      "eventID": "evt-canary-1",
+      "title": "Checkout failed",
+      "user": { "email": "canary.user.7f3a@example.invalid", "phone": "+998 90 555 01 77" },
+      "request": {
+        "headers": { "Authorization": "Bearer canaryBearerTok3n9f2a7c1d", "Cookie": "sessionid=canarySessionCookie91c4" },
+        "data": "{\"password\":\"canaryRequestBodyPw5d1\"}",
+        "query_string": "access_token=canaryQueryTokenb82e"
+      },
+      "entries": [{ "type": "exception", "data": { "values": [{ "stacktrace": { "frames": [{ "vars": { "secret": "canaryLocalVarSecret44b9", "key": "-----BEGIN CANARY PRIVATE KEY-----", "bot": "7000000001:CANARYbotTokenAAAAAAAAAAAAAAAAAAAAA" } }] } }] } }]
+    },
+    "application": { "name": "Shop", "projectSlug": "shop" }
+  },
+  {
+    "name": "html-injection-and-control-characters",
+    "payload": {},
+    "issue": { "id": "9002", "title": "<script>alert(1)</script><b onclick=\"x\">boom</b>\u0000‮​\u001b[31m", "project": { "slug": "../../etc/passwd" }, "permalink": "javascript:alert(1)" },
+    "event": { "eventID": "evt-canary-2" },
+    "application": { "name": "<img src=x onerror=alert(1)>", "projectSlug": "../../etc/passwd" }
+  },
+  {
+    "name": "oversized-payload",
+    "payload": {},
+    "issue": { "id": "9003", "title": "OVERSIZE_PLACEHOLDER", "project": { "slug": "shop" } },
+    "event": { "eventID": "evt-canary-3", "extra": "OVERSIZE_PLACEHOLDER" },
+    "application": { "name": "Shop", "projectSlug": "shop" }
+  }
+]

@@ -1,0 +1,17 @@
+{
+  "text": "GlitchTip Alert",
+  "attachments": [
+    {
+      "title": "OperationalError: database unavailable",
+      "title_link": "https://errors.example.test/acme/issues/1842",
+      "text": "billing/db.py in connect",
+      "color": "#e52b50",
+      "fields": [
+        { "title": "Project", "value": "Billing API", "short": true },
+        { "title": "Environment", "value": "production", "short": true },
+        { "title": "Release", "value": "a81c2f7", "short": false }
+      ],
+      "mrkdown_in": ["text"]
+    }
+  ]
+}

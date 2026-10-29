@@ -1,0 +1,4 @@
+[
+  { "name": "token-and-url-in-api-description", "ok": false, "error_code": 400, "description": "Bad Request: bot7000000001:CANARYbotTokenAAAAAAAAAAAAAAAAAAAAA failed at https://api.telegram.org/bot7000000001:CANARYbotTokenAAAAAAAAAAAAAAAAAAAAA/sendMessage?access_token=canaryQueryTokenb82e" },
+  { "name": "token-in-forbidden-description", "ok": false, "error_code": 403, "description": "Forbidden: 7000000001:CANARYbotTokenAAAAAAAAAAAAAAAAAAAAA was blocked" }
+]

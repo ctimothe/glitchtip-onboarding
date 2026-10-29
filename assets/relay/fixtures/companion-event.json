@@ -1,0 +1,14 @@
+{
+  "companion_state": "test",
+  "event_id": "test-5f0c2a9e41d7b388",
+  "text": "GlitchTip Companion",
+  "attachments": [
+    {
+      "title": "Companion test alert",
+      "fields": [
+        { "title": "Project", "value": "billing-api", "short": true },
+        { "title": "Environment", "value": "production", "short": true }
+      ]
+    }
+  ]
+}

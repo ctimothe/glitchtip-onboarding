@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Companion security regression gate: canary corpus through every boundary plus static checks.
+# Exit 0 only when no forbidden canary appears and no static rule is violated.
+set -uo pipefail
+cd "$(dirname "$0")/.." || exit 1
+node --test scripts/security-scan-lib.test.js || exit 1
+exec node scripts/security-scan-lib.js

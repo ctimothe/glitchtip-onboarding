@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <!-- Menu bar template image: black on transparent, so macOS tints it for
+       light and dark menu bars. The pulse is cut out of the bubble. -->
+  <defs>
+    <mask id="pulse">
+      <rect width="64" height="64" fill="#FFFFFF"/>
+      <path d="M13 30 H21 L24.5 23 L30.5 37.5 L34.5 27 L36.5 30 H51" fill="none" stroke="#000000" stroke-width="4.4" stroke-linecap="round" stroke-linejoin="round"/>
+    </mask>
+  </defs>
+  <g mask="url(#pulse)" fill="#000000">
+    <rect x="4" y="9" width="56" height="42" rx="13"/>
+    <path d="M14 46 L11 59 Q10.6 61 12.4 60 L28 50 Z"/>
+  </g>
+</svg>

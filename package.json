@@ -1,0 +1,24 @@
+{
+  "name": "glitchtip-onboarding",
+  "private": true,
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "build": "npm run build -w @glitchtip-onboarding/sdk",
+    "typecheck": "npm run typecheck -w @glitchtip-onboarding/sdk",
+    "test:unit": "npm run test:unit -w @glitchtip-onboarding/sdk",
+    "test:relay": "node --test assets/relay/*.test.js",
+    "test:pack": "npm run build && bash packages/sdk/test/fixtures/test-pack.sh",
+    "test:examples": "npm run build && tsc -p fixtures/sdk/tsconfig.json",
+    "test": "npm run typecheck && npm run test:unit && npm run test:relay && npm run build && npm run test:pack && npm run test:examples"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.0",
+    "vitest": "^3.0.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

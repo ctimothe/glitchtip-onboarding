@@ -1,0 +1,166 @@
+# Builds GlitchTip Companion for Apple silicon, signed with Developer ID and notarized, and attaches
+# the DMG to a draft GitHub release for a `desktop-v<version>` tag. A manual run (workflow_dispatch)
+# checks the signing secrets end to end: it keeps the DMG as a workflow artifact and publishes nothing.
+#
+# Secrets: APPLE_CERTIFICATE (the Developer ID Application .p12, base64) and
+# APPLE_CERTIFICATE_PASSWORD; optionally APPLE_SIGNING_IDENTITY. For notarization either
+# APPLE_API_ISSUER, APPLE_API_KEY and APPLE_API_KEY_P8 (the .p8 file's text), or APPLE_ID,
+# APPLE_PASSWORD (an app-specific password) and APPLE_TEAM_ID; the API key wins when its .p8 is set.
+# Only the bundling step sees their values, after every dependency has been built without them.
+name: desktop-release
+
+on:
+  push:
+    tags: ["desktop-v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: macos-15
+    timeout-minutes: 60
+    permissions:
+      contents: write
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24.21.0
+
+      - name: Check the tag matches the app version
+        if: github.event_name == 'push'
+        run: |
+          version=$(node -p "require('./apps/desktop/src-tauri/tauri.conf.json').version")
+          if [[ "$GITHUB_REF_NAME" != "desktop-v$version" ]]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match the app version $version in tauri.conf.json."
+            exit 1
+          fi
+
+      - name: Check the signing secrets are set
+        # Only whether each secret is set reaches this step, never its value.
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE != '' }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD != '' }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER != '' }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY != '' }}
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 != '' }}
+          APPLE_ID: ${{ secrets.APPLE_ID != '' }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD != '' }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID != '' }}
+        run: |
+          missing=()
+          for name in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD; do
+            [[ "${!name}" == true ]] || missing+=("$name")
+          done
+          if [[ "$APPLE_API_KEY_P8" == true ]]; then
+            notarize=(APPLE_API_ISSUER APPLE_API_KEY APPLE_API_KEY_P8)
+          else
+            notarize=(APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID)
+          fi
+          for name in "${notarize[@]}"; do
+            [[ "${!name}" == true ]] || missing+=("$name")
+          done
+          if (( ${#missing[@]} )); then
+            echo "::error::Missing secrets: ${missing[*]}. A release is never built unsigned."
+            exit 1
+          fi
+
+      - name: Install Rust 1.98.1
+        run: rustup toolchain install 1.98.1 --profile minimal && rustup default 1.98.1
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Fetch the bundled Node.js
+        run: bash apps/desktop/scripts/fetch-node.sh
+
+      - name: Build the app
+        working-directory: apps/desktop
+        run: npx tauri build --no-bundle
+
+      - name: Bundle, sign and notarize the app and the DMG
+        working-directory: apps/desktop
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_KEY_P8 != '' && secrets.APPLE_API_ISSUER || '' }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY_P8 != '' && secrets.APPLE_API_KEY || '' }}
+          APPLE_ID: ${{ secrets.APPLE_API_KEY_P8 == '' && secrets.APPLE_ID || '' }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_API_KEY_P8 == '' && secrets.APPLE_PASSWORD || '' }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_API_KEY_P8 == '' && secrets.APPLE_TEAM_ID || '' }}
+        run: |
+          if [[ -n "$APPLE_API_KEY_P8" ]]; then
+            (umask 077 && printf '%s\n' "$APPLE_API_KEY_P8" > "$RUNNER_TEMP/AuthKey.p8")
+            export APPLE_API_KEY_PATH="$RUNNER_TEMP/AuthKey.p8"
+            auth=(--key "$APPLE_API_KEY_PATH" --key-id "$APPLE_API_KEY" --issuer "$APPLE_API_ISSUER")
+          else
+            auth=(--apple-id "$APPLE_ID" --password "$APPLE_PASSWORD" --team-id "$APPLE_TEAM_ID")
+          fi
+          unset APPLE_API_KEY_P8
+          # Tauri treats a variable that is set but empty as given.
+          for name in APPLE_SIGNING_IDENTITY APPLE_API_ISSUER APPLE_API_KEY APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do
+            [[ -n "${!name}" ]] || unset "$name"
+          done
+          npx tauri bundle
+          dmg=$(find "$PWD/src-tauri/target/release/bundle/dmg" -name '*.dmg' -print -quit)
+          [[ -n "$dmg" ]] || { echo "::error::The build made no DMG."; exit 1; }
+          # Tauri notarizes and staples the app; the DMG around it is left to us.
+          xcrun notarytool submit "$dmg" "${auth[@]}" --wait --timeout 30m
+          xcrun stapler staple "$dmg"
+          rm -f "$RUNNER_TEMP/AuthKey.p8"
+          echo "DMG=$dmg" >> "$GITHUB_ENV"
+
+      - name: Check Gatekeeper accepts the app and the DMG
+        # The app inside the DMG: Tauri deletes the separate .app when only a DMG is asked for.
+        run: |
+          mount=$(mktemp -d)
+          hdiutil attach "$DMG" -nobrowse -readonly -mountpoint "$mount" > /dev/null
+          trap 'hdiutil detach "$mount" -quiet' EXIT
+          app="$mount/GlitchTip Companion.app"
+          codesign --verify --deep --strict --verbose=2 "$app"
+          xcrun stapler validate "$app"
+          spctl --assess --type execute --verbose=2 "$app"
+          xcrun stapler validate "$DMG"
+          spctl --assess --type open --context context:primary-signature --verbose=2 "$DMG"
+
+      - name: Attach the DMG to a draft release
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          draft=$(gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft 2> /dev/null || true)
+          # Never --clobber: the draft could be published between this check and the upload.
+          case "$draft" in
+            true) gh release upload "$GITHUB_REF_NAME" "$DMG" --repo "$GITHUB_REPOSITORY" ;;
+            false)
+              echo "::error::Release $GITHUB_REF_NAME is already published; its DMG is not replaced."
+              exit 1
+              ;;
+            *)
+              gh release create "$GITHUB_REF_NAME" "$DMG" --repo "$GITHUB_REPOSITORY" --draft --verify-tag \
+                --title "GlitchTip Companion ${GITHUB_REF_NAME#desktop-v}" --generate-notes
+              ;;
+          esac
+
+      - name: Keep the DMG from a manual run
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: glitchtip-companion-dmg
+          path: ${{ env.DMG }}
+          retention-days: 7
+          if-no-files-found: error

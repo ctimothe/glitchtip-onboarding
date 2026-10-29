@@ -1,0 +1,58 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "v1 scopes + v2 relay daemon (launchctl only, relay log read + open-in-Console) + native window chrome (drag, zoom, theme) + menu bar commands (listen)",
+  "windows": ["main"],
+  "permissions": [
+    "core:window:allow-start-dragging",
+    "core:window:allow-internal-toggle-maximize",
+    "core:window:allow-set-theme",
+    "core:event:allow-listen",
+    "core:event:allow-unlisten",
+    {
+      "identifier": "fs:allow-read-text-file",
+      "allow": [
+        { "path": "$HOME/Library/Logs/dev.ctimothe.glitchtip-onboarding/relay.log" }
+      ]
+    },
+    {
+      "identifier": "fs:allow-mkdir",
+      "allow": [{ "path": "$APPCONFIG" }]
+    },
+    {
+      "identifier": "opener:allow-open-path",
+      "allow": [
+        { "path": "$HOME/Library/Logs/dev.ctimothe.glitchtip-onboarding/relay.log" }
+      ]
+    },
+    {
+      "identifier": "shell:allow-execute",
+      "allow": [
+        {
+          "name": "launchctl",
+          "cmd": "/bin/launchctl",
+          "args": [
+            {
+              "validator": "(load|unload|list|print)"
+            },
+            {
+              "validator": "[A-Za-z0-9/._~ \\-]+"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "identifier": "store:allow-load"
+    },
+    {
+      "identifier": "store:allow-get"
+    },
+    {
+      "identifier": "store:allow-set"
+    },
+    {
+      "identifier": "store:allow-save"
+    }
+  ]
+}

@@ -1,0 +1,17 @@
+.env
+.env.*
+!.env.example
+*.summary.json
+.idea/
+node_modules/
+.check-logs/
+.superpowers/
+__pycache__/
+.worktrees/
+packages/sdk/dist/
+assets/relay/deploy/relay.env
+.next/
+next-env.d.ts
+*.tsbuildinfo
+dist/
+apps/desktop/src-tauri/binaries/node-*

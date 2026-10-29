@@ -1,0 +1,28 @@
+services:
+  companion-relay:
+    # One image per release (the installer sets COMPANION_RELEASE), so a rollback or a restore
+    # after a failed install runs that release's own code.
+    image: glitchtip-companion-relay:${COMPANION_RELEASE:-unversioned}
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    restart: unless-stopped
+    env_file: relay.env
+    volumes:
+      - companion-relay-state:/var/lib/glitchtip-companion
+    networks:
+      - glitchtip
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8090/health/ready').then(r=>{if(!r.ok)process.exit(1)})"]
+      interval: 15s
+      timeout: 5s
+      retries: 8
+
+networks:
+  glitchtip:
+    external: true
+    # The Companion installer exports the network it validated in preflight.
+    name: ${COMPANION_DOCKER_NETWORK:-glitchtip}
+
+volumes:
+  companion-relay-state:

@@ -1,0 +1,20 @@
+# Verified with Colima (Docker 29.5.2) on 2026-10-28. run.sh passes the repository root as COMPANION_E2E_ROOT.
+# The assertions start the real relay and both fakes in one process on loopback, so the network is
+# internal and has no route out.
+services:
+  e2e:
+    image: node:22-alpine
+    working_dir: /repo
+    volumes:
+      - ${COMPANION_E2E_ROOT}:/repo:ro
+    environment:
+      TMPDIR: /tmp
+    tmpfs:
+      - /tmp
+    command: ["node", "--test", "--test-timeout=60000", "test/companion-e2e/assertions.test.js"]
+    networks:
+      - e2e
+
+networks:
+  e2e:
+    internal: true

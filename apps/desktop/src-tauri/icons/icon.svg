@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <!-- GlitchTip Companion app icon, drawn on the macOS icon grid: an 824 px
+       body inset 100 px with a soft drop shadow. Source for `tauri icon`. -->
+  <defs>
+    <linearGradient id="body" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#7A6BFF"/>
+      <stop offset="1" stop-color="#3F2FD6"/>
+    </linearGradient>
+    <linearGradient id="bubble" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFFFFF"/>
+      <stop offset="1" stop-color="#E6E3FF"/>
+    </linearGradient>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="125%">
+      <feDropShadow dx="0" dy="12" stdDeviation="14" flood-color="#000000" flood-opacity="0.28"/>
+    </filter>
+    <filter id="lift" x="-10%" y="-10%" width="120%" height="130%">
+      <feDropShadow dx="0" dy="10" stdDeviation="16" flood-color="#1E1580" flood-opacity="0.35"/>
+    </filter>
+  </defs>
+  <rect x="100" y="100" width="824" height="824" rx="186" fill="url(#body)" filter="url(#shadow)"/>
+  <g filter="url(#lift)">
+    <rect x="232" y="282" width="560" height="400" rx="132" fill="url(#bubble)"/>
+    <path d="M330 640 L300 770 Q296 790 314 780 L470 676 Z" fill="url(#bubble)"/>
+  </g>
+  <path d="M322 486 H430 L474 400 L548 580 L598 452 L622 486 H702" fill="none" stroke="#4A39E3" stroke-width="44" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
