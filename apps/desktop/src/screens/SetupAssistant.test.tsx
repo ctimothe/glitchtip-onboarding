@@ -460,4 +460,31 @@ describe("setup assistant", () => {
     expect(screen.getByLabelText("GlitchTip project slug")).toBeTruthy();
     expect(pairing.createPairingCode).not.toHaveBeenCalled();
   });
+
+  it("ends setup after GlitchTip when the owner continues without Telegram", async () => {
+    const onWorkspaceChange = vi.fn();
+    const ws = { ...fresh(), onboarding: { completedAt: null, currentStage: 2 as const } };
+    render(<SetupAssistant workspace={ws} onWorkspaceChange={onWorkspaceChange} />);
+    click("Continue without Telegram");
+    const next = onWorkspaceChange.mock.lastCall![0] as WorkspaceState;
+    expect(next.onboarding.completedAt).not.toBeNull();
+    expect(next.relay).toBeNull();
+  });
+
+  it("can still end setup once the relay is deployed, before the chat is paired", () => {
+    const onWorkspaceChange = vi.fn();
+    const relay = { host: "h", user: "u", port: 22, identityFile: "", dockerNetwork: "n", deploymentDir: "/d", revision: "r", previousRevision: null, status: "unknown" as const, verifiedAt: null };
+    const ws = { ...fresh(), relay, onboarding: { completedAt: null, currentStage: 3 as const } };
+    render(<SetupAssistant workspace={ws} onWorkspaceChange={onWorkspaceChange} />);
+    click("Continue without Telegram");
+    const next = onWorkspaceChange.mock.lastCall![0] as WorkspaceState;
+    expect(next.onboarding).toEqual({ completedAt: expect.any(String), currentStage: 3 });
+    expect(next.relay).toEqual(relay);
+  });
+
+  it("offers no way around Telegram when adding an application", () => {
+    const ws = { ...fresh(), onboarding: { completedAt: "2026-01-01T00:00:00.000Z", currentStage: 6 as const } };
+    render(<SetupAssistant workspace={ws} mode="add-application" onWorkspaceChange={vi.fn()} />);
+    expect(screen.queryByRole("button", { name: "Continue without Telegram" })).toBeNull();
+  });
 });

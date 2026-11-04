@@ -3,7 +3,12 @@ import {
   ALERT_RULE_NAME,
   checkInstance,
   fetchInventory,
+  issueUrl,
+  latestEvent,
+  projectDsn,
+  listIssues,
   provisionInventory,
+  setIssueStatus,
   type Inventory,
 } from "./glitchtip";
 
@@ -146,6 +151,31 @@ describe("checkInstance", () => {
     );
     await checkInstance("https://errors.example.com", fetchFn);
     expectGetOnly(calls);
+  });
+
+  it("falls back to /api/settings/ when neither schema path answers", async () => {
+    const { fetchFn, calls } = recordingFetch((url) =>
+      url.endsWith("/api/settings/")
+        ? jsonResponse(200, { iPaidForGlitchTip: false, enableOrganizationCreation: false })
+        : jsonResponse(404, {}),
+    );
+    const info = await checkInstance("https://errors.example.com", fetchFn);
+    expect(info.glitchtipTitle).toBe(true);
+    expect(calls.map((call) => call.url)).toEqual([
+      "https://errors.example.com/api/0/openapi.json",
+      "https://errors.example.com/api/openapi.json",
+      "https://errors.example.com/api/settings/",
+    ]);
+    expectGetOnly(calls);
+  });
+
+  it("rejects settings that are not GlitchTip's", async () => {
+    const { fetchFn } = recordingFetch((url) =>
+      url.endsWith("/api/settings/") ? jsonResponse(200, { theme: "dark" }) : jsonResponse(404, {}),
+    );
+    await expect(checkInstance("https://errors.example.com", fetchFn)).rejects.toThrow(
+      "not-a-glitchtip-instance",
+    );
   });
 });
 
@@ -904,5 +934,255 @@ describe("provisionInventory", () => {
     );
     expect(calls.some((c) => c.url.includes("/keys/"))).toBe(false);
     expect(calls.some((c) => c.url.includes("/alerts/"))).toBe(false);
+  });
+});
+
+function responseWithLink(status: number, body: unknown, link: string | null) {
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    headers: new Headers(link === null ? {} : { Link: link }),
+    json: async () => body,
+  } as unknown as Response;
+}
+
+const ISSUE = {
+  id: "42",
+  shortId: "STOREFRONT-1A",
+  title: "TypeError: x is undefined",
+  culprit: "app/routes/case.ts in load",
+  level: "error",
+  status: "unresolved",
+  count: "17",
+  userCount: 3,
+  firstSeen: "2026-10-28T08:00:00Z",
+  lastSeen: "2026-10-29T09:30:00Z",
+  project: { id: "7", slug: "storefront", name: "storefront" },
+  // GlitchTip 6.2.0 builds this from the project slug, a page that does not exist; it is ignored.
+  permalink: "https://errors.example.com/storefront/issues/42",
+};
+
+describe("listIssues", () => {
+  it("asks for unresolved issues, newest activity first, and maps them", async () => {
+    const { fetchFn, calls } = recordingFetch(() => responseWithLink(200, [ISSUE], null));
+    const page = await listIssues("https://errors.example.com/", "tok", "acme corp", {}, fetchFn);
+    const url = new URL(calls[0].url);
+    expect(url.pathname).toBe("/api/0/organizations/acme%20corp/issues/");
+    expect(url.searchParams.get("query")).toBe("is:unresolved");
+    expect(url.searchParams.get("sort")).toBe("-last_seen");
+    expect(url.searchParams.get("limit")).toBe("100");
+    expect(url.searchParams.has("cursor")).toBe(false);
+    expect(new Headers(calls[0].init?.headers).get("Authorization")).toBe("Bearer tok");
+    expectGetOnly(calls);
+    expect(page.nextCursor).toBeNull();
+    expect(page.issues).toEqual([
+      {
+        id: "42",
+        shortId: "STOREFRONT-1A",
+        title: "TypeError: x is undefined",
+        culprit: "app/routes/case.ts in load",
+        level: "error",
+        status: "unresolved",
+        count: 17,
+        userCount: 3,
+        firstSeen: "2026-10-28T08:00:00Z",
+        lastSeen: "2026-10-29T09:30:00Z",
+        project: { id: "7", slug: "storefront", name: "storefront" },
+      },
+    ]);
+  });
+
+  it("passes the cursor and reads the next one from the Link header", async () => {
+    const link =
+      '<https://errors.example.com/api/0/organizations/acme/issues/?cursor=a>; rel="previous"; results="false"; cursor="a", ' +
+      '<https://errors.example.com/api/0/organizations/acme/issues/?cursor=b>; rel="next"; results="true"; cursor="b"';
+    const { fetchFn, calls } = recordingFetch(() => responseWithLink(200, [ISSUE], link));
+    const page = await listIssues("https://errors.example.com", "tok", "acme", { cursor: "a" }, fetchFn);
+    expect(new URL(calls[0].url).searchParams.get("cursor")).toBe("a");
+    expect(page.nextCursor).toBe("b");
+  });
+
+  it("reads the next cursor from the Link header exactly as GlitchTip 6.2.0 sends it", async () => {
+    const link =
+      "{'<http://localhost:8765/api/0/organizations/livecheck/issues/?limit=100>; rel=\"previous\"; results=\"false\", " +
+      '<http://localhost:8765/api/0/organizations/livecheck/issues/?cursor=cD0y&limit=100>; rel="next"; results="true"; cursor="cD0y"\'}';
+    const { fetchFn } = recordingFetch(() => responseWithLink(200, [ISSUE], link));
+    const page = await listIssues("https://errors.example.com", "tok", "livecheck", {}, fetchFn);
+    expect(page.nextCursor).toBe("cD0y");
+  });
+
+  it("reports no next page when the next link has no results", async () => {
+    const link = '<https://x/?cursor=b>; rel="next"; results="false"; cursor="b"';
+    const { fetchFn } = recordingFetch(() => responseWithLink(200, [], link));
+    const page = await listIssues("https://errors.example.com", "tok", "acme", {}, fetchFn);
+    expect(page.nextCursor).toBeNull();
+  });
+
+  it("skips entries without an id or title instead of failing the page", async () => {
+    const { fetchFn } = recordingFetch(() =>
+      responseWithLink(200, [ISSUE, { id: 5 }, null, { ...ISSUE, id: "43", count: "oops" }], null),
+    );
+    const page = await listIssues("https://errors.example.com", "tok", "acme", {}, fetchFn);
+    expect(page.issues.map((issue) => [issue.id, issue.count])).toEqual([
+      ["42", 17],
+      ["43", 0],
+    ]);
+  });
+
+  it("throws with the status when the server refuses", async () => {
+    const { fetchFn } = recordingFetch(() => responseWithLink(401, { detail: "no" }, null));
+    await expect(listIssues("https://errors.example.com", "tok", "acme", {}, fetchFn)).rejects.toThrow(
+      "GET /api/0/organizations/acme/issues/ -> HTTP 401",
+    );
+  });
+});
+
+describe("latestEvent", () => {
+  it("reads the latest event and keeps exceptions, frames, tags and release", async () => {
+    const { fetchFn, calls } = recordingFetch(() =>
+      jsonResponse(200, {
+        eventID: "abc",
+        dateCreated: "2026-10-29T09:30:00Z",
+        message: "",
+        release: { version: "1.4.0" },
+        tags: [{ key: "environment", value: "production" }, { key: 1 }],
+        entries: [
+          { type: "breadcrumbs", data: { values: [] } },
+          {
+            type: "exception",
+            data: {
+              values: [
+                {
+                  type: "TypeError",
+                  value: "x is undefined",
+                  stacktrace: {
+                    frames: [
+                      { filename: "node_modules/lib.js", function: "run", lineNo: 1, colNo: 2, inApp: false },
+                      { filename: "app/routes/case.ts", function: "load", lineNo: 42, colNo: 7, inApp: true },
+                    ],
+                  },
+                },
+              ],
+            },
+          },
+        ],
+      }),
+    );
+    const event = await latestEvent("https://errors.example.com", "tok", "42", fetchFn);
+    expect(calls[0].url).toBe("https://errors.example.com/api/0/issues/42/events/latest/");
+    expectGetOnly(calls);
+    expect(event).toEqual({
+      eventId: "abc",
+      dateCreated: "2026-10-29T09:30:00Z",
+      message: "",
+      release: "1.4.0",
+      tags: [{ key: "environment", value: "production" }],
+      exceptions: [
+        {
+          type: "TypeError",
+          value: "x is undefined",
+          frames: [
+            { filename: "app/routes/case.ts", function: "load", lineNo: 42, colNo: 7, inApp: true },
+            { filename: "node_modules/lib.js", function: "run", lineNo: 1, colNo: 2, inApp: false },
+          ],
+        },
+      ],
+    });
+  });
+
+  it("reads the release from its tag when the event has no release object, as GlitchTip 6.2.0 sends it", async () => {
+    const { fetchFn } = recordingFetch(() =>
+      jsonResponse(200, {
+        eventID: "abc",
+        dateCreated: "2026-11-01T09:30:00Z",
+        message: "",
+        tags: [
+          { key: "environment", value: "production" },
+          { key: "release", value: "livecheck@1.0.0" },
+        ],
+        entries: [],
+      }),
+    );
+    const event = await latestEvent("https://errors.example.com", "tok", "42", fetchFn);
+    expect(event.release).toBe("livecheck@1.0.0");
+  });
+
+  it("throws with the status when the event cannot be read", async () => {
+    const { fetchFn } = recordingFetch(() => jsonResponse(404, {}));
+    await expect(latestEvent("https://errors.example.com", "tok", "42", fetchFn)).rejects.toThrow(
+      "GET /api/0/issues/42/events/latest/ -> HTTP 404",
+    );
+  });
+});
+
+describe("setIssueStatus", () => {
+  it("puts the new status on the organization's issue", async () => {
+    const { fetchFn, calls } = recordingFetch(() => jsonResponse(200, { ...ISSUE, status: "resolved" }));
+    await setIssueStatus("https://errors.example.com", "tok", "acme", "42", "resolved", fetchFn);
+    expect(calls).toHaveLength(1);
+    expect(calls[0].url).toBe("https://errors.example.com/api/0/organizations/acme/issues/42/");
+    expect(calls[0].init?.method).toBe("PUT");
+    expect(JSON.parse(String(calls[0].init?.body))).toEqual({ status: "resolved" });
+    const headers = new Headers(calls[0].init?.headers);
+    expect(headers.get("Authorization")).toBe("Bearer tok");
+    expect(headers.get("Content-Type")).toBe("application/json");
+  });
+
+  it("throws with the status when the change is refused", async () => {
+    const { fetchFn } = recordingFetch(() => jsonResponse(403, {}));
+    await expect(
+      setIssueStatus("https://errors.example.com", "tok", "acme", "42", "ignored", fetchFn),
+    ).rejects.toThrow("PUT /api/0/organizations/acme/issues/42/ -> HTTP 403");
+  });
+});
+
+describe("authenticated requests", () => {
+  it("refuse redirects, so the token never follows one to another host", async () => {
+    const { fetchFn, calls } = recordingFetch(() => responseWithLink(200, [], null));
+    await listIssues("https://errors.example.com", "tok", "acme", {}, fetchFn);
+    await setIssueStatus("https://errors.example.com", "tok", "acme", "42", "resolved", fetchFn).catch(() => {});
+    expect(calls.map((call) => call.init?.redirect)).toEqual(["error", "error"]);
+  });
+
+  it("count an answer that is not a list as an error, not as an empty inbox", async () => {
+    const { fetchFn } = recordingFetch(() => responseWithLink(200, { detail: "x" }, null));
+    await expect(listIssues("https://errors.example.com", "tok", "acme", {}, fetchFn)).rejects.toThrow(
+      "GET /api/0/organizations/acme/issues/ -> not a list",
+    );
+  });
+});
+
+describe("issueUrl", () => {
+  it("links the issue under its organization on the server's own address", () => {
+    // The server's own permalink names the project slug, a page GlitchTip 6.2.0 does not serve.
+    const fromServer = { id: "42", permalink: "https://errors.example.com/storefront/issues/42" };
+    expect(issueUrl("https://errors.example.com/", "acme", fromServer)).toBe(
+      "https://errors.example.com/acme/issues/42",
+    );
+    expect(issueUrl("https://errors.example.com", "a b", { id: "4/2" })).toBe(
+      "https://errors.example.com/a%20b/issues/4%2F2",
+    );
+  });
+});
+
+describe("projectDsn", () => {
+  it("reads the public DSN of the project's first key", async () => {
+    const { fetchFn, calls } = recordingFetch(() =>
+      jsonResponse(200, [{ dsn: { public: "https://k@errors.example.com/7", secret: "x" } }]),
+    );
+    expect(await projectDsn("https://errors.example.com/", "tok", "acme", "web app", fetchFn)).toBe(
+      "https://k@errors.example.com/7",
+    );
+    expect(calls[0].url).toBe("https://errors.example.com/api/0/projects/acme/web%20app/keys/");
+    expectGetOnly(calls);
+  });
+
+  it("throws when the project has no key or the read is refused", async () => {
+    await expect(projectDsn("https://e.example", "tok", "acme", "web", recordingFetch(() => jsonResponse(200, [])).fetchFn)).rejects.toThrow(
+      "no key",
+    );
+    await expect(projectDsn("https://e.example", "tok", "acme", "web", recordingFetch(() => jsonResponse(403, {})).fetchFn)).rejects.toThrow(
+      "HTTP 403",
+    );
   });
 });

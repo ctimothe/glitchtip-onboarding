@@ -10,7 +10,9 @@ tauri-build = { version = "=2.6.3", features = [] }
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = { version = "=1.0.151" }
 tauri = { version = "=2.11.4", features = ["macos-private-api", "tray-icon", "image-png"] }
+tauri-plugin-autostart = { version = "=2.5.1" }
 tauri-plugin-fs = { version = "=2.5.2" }
+tauri-plugin-notification = { version = "=2.4.0" }
 tauri-plugin-opener = { version = "=2.5.5" }
 tauri-plugin-shell = { version = "=2.3.6" }
 tauri-plugin-store = { version = "=2.4.4" }

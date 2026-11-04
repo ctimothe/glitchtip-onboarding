@@ -961,10 +961,8 @@ mod tests {
 // The tray icon is Rust-owned so `icons/tray.png` (a template image drawn from
 // `icons/tray.svg`) ships inside the binary (no resource-path lookup, no extra
 // capability scopes); macOS tints it for light and dark menu bars. The
-// frontend owns the alert feed: `TrayManager.tsx` polls the relay log every
-// 10 s and pushes tooltip/badge/menu through `tray_update`. No desktop
-// notifications in v1 (the notification plugin is present but unconfigured
-// — explicit non-goal).
+// frontend owns the feed: `TrayManager.tsx` pushes the inbox's open errors and
+// unread count through `tray_update`, and the inbox sends the notifications.
 
 const TRAY_ID: &str = "main";
 const TRAY_OPEN_ID: &str = "tray-open";
@@ -987,7 +985,7 @@ struct TrayLabels {
 impl Default for TrayLabels {
     fn default() -> Self {
         Self {
-            empty: "No alerts yet".into(),
+            empty: "No open errors".into(),
             open: "Open GlitchTip Companion".into(),
             quit: "Quit GlitchTip Companion".into(),
         }
@@ -1071,12 +1069,25 @@ fn main() {
         std::process::exit(helper::main(&args[1..]));
     }
     tauri::Builder::default()
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            None,
+        ))
+        .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_store::Builder::default().build())
         .menu(|app| app_menu::build(app, &app_menu::AppMenuLabels::default(), false))
         .on_menu_event(|app, event| app_menu::on_event(app, event.id.as_ref()))
+        // Closing the window keeps the app in the menu bar, so the inbox keeps watching for
+        // errors; Quit in the app or menu bar menu ends it.
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                api.prevent_close();
+                let _ = window.hide();
+            }
+        })
         .setup(|app| {
             let menu = build_tray_menu(app.handle(), &[], &TrayLabels::default())?;
             let icon = Image::from_bytes(include_bytes!("../icons/tray.png"))?;
@@ -1126,6 +1137,15 @@ fn main() {
             agent_install::agent_install,
             agent_install::agent_verify
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app, event| {
+            // Clicking the Dock icon brings back the window that Close hid.
+            if let tauri::RunEvent::Reopen { .. } = event {
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.show();
+                    let _ = window.set_focus();
+                }
+            }
+        });
 }

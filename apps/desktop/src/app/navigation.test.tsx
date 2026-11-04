@@ -38,24 +38,42 @@ function workspace(completedAt: string | null): WorkspaceState {
     name: "Main",
     locale: "en",
     glitchtip: { baseUrl: "https://gt.example.com", organizationSlug: "org", verifiedAt: "2026-10-01T00:00:00Z" },
+    telegram:
+      completedAt === null
+        ? null
+        : { botId: 1, botUsername: "acme_bot", chatId: -1001, chatTitle: "Acme", allowedMemberIds: [1], pairedAt: completedAt },
     onboarding: { completedAt, currentStage: completedAt === null ? 2 : 6 },
   });
 }
 
+/** Setup finished without Telegram: GlitchTip only. */
+function inboxOnly(): WorkspaceState {
+  return { ...workspace("2026-10-02T00:00:00Z"), telegram: null, onboarding: { completedAt: "2026-10-02T00:00:00Z", currentStage: 2 } };
+}
+
 describe("dashboard navigation", () => {
+  it("shows a quiet spinner while the workspace loads", () => {
+    render(<App />);
+    const main = screen.getByRole("main");
+    expect(main.getAttribute("aria-busy")).toBe("true");
+    expect(main.querySelector(".ui-spinner")).not.toBeNull();
+    expect(within(main).getByText("Loading workspace")).toBeDefined();
+  });
+
   it("opens setup, without the sidebar, while onboarding is incomplete", () => {
     render(<App initialWorkspace={workspace(null)} />);
     expect(screen.getByRole("heading", { name: "Setup" })).toBeTruthy();
     expect(screen.queryByRole("navigation")).toBeNull();
   });
 
-  it("opens Overview with the seven destinations in order once onboarding is complete", () => {
+  it("opens the Inbox with the eight destinations in order once onboarding is complete", () => {
     render(<App initialWorkspace={workspace("2026-10-02T00:00:00Z")} />);
     const nav = screen.getByRole("navigation");
     const labels = within(nav)
       .getAllByRole("button")
       .map((b) => b.textContent);
     expect(labels).toEqual([
+      "Inbox",
       "Overview",
       "Applications",
       "Telegram",
@@ -65,8 +83,28 @@ describe("dashboard navigation", () => {
       "Settings",
       "Add application",
     ]);
-    expect(screen.getByRole("heading", { name: "Overview" })).toBeTruthy();
-    expect(screen.getByText("Prepare agent brief")).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Inbox" })).toBeTruthy();
+  });
+
+  it("leaves out the delivery screens and Add application while Telegram is off", () => {
+    render(<App initialWorkspace={inboxOnly()} />);
+    const labels = within(screen.getByRole("navigation"))
+      .getAllByRole("button")
+      .map((b) => b.textContent);
+    expect(labels).toEqual(["Inbox", "Overview", "Applications", "Credentials", "Settings"]);
+    const [, destinations] = menu.install.mock.lastCall!;
+    expect((destinations as Array<{ id: string }>).map((item) => item.id)).toEqual([
+      "inbox",
+      "overview",
+      "applications",
+      "credentials",
+    ]);
+    act(() => menu.handler!("add-application"));
+    expect(screen.getByRole("heading", { name: "Inbox" })).toBeTruthy();
+    // Adding an application needs the relay, so the Applications toolbar offers no Add either.
+    act(() => menu.handler!("applications"));
+    expect(screen.getByRole("heading", { name: "Applications" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Add application" })).toBeNull();
   });
 
   it("moves focus with arrow keys and opens a destination on activation", async () => {
@@ -114,6 +152,7 @@ describe("dashboard navigation", () => {
     const [, destinations, navigation] = menu.install.mock.lastCall!;
     expect(navigation).toBe(true);
     expect((destinations as Array<{ id: string }>).map((item) => item.id)).toEqual([
+      "inbox",
       "overview",
       "applications",
       "telegram",
@@ -136,6 +175,6 @@ describe("dashboard navigation", () => {
     document.body.append(sheet);
     act(() => menu.handler!("relay"));
     sheet.remove();
-    expect(screen.getByRole("heading", { name: "Overview" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Inbox" })).toBeTruthy();
   });
 });

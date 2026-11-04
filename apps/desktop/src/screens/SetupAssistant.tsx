@@ -41,6 +41,8 @@ import * as secrets from "../lib/secrets";
 import {
   ALERT_RULE_CONTRACT,
   SetupError,
+  canFinishWithoutTelegram,
+  finishWithoutTelegram,
   runStage,
   type ApplicationInput,
   type SetupDeps,
@@ -735,6 +737,19 @@ export function SetupAssistant(props: {
     </>
   );
 
+  // Telegram is optional: until the first application, setup can end here and open the inbox.
+  const skip =
+    !adding && !done && canFinishWithoutTelegram(ws) ? (
+      <Button
+        variant="secondary"
+        size="large"
+        disabled={busy}
+        onClick={() => void props.onWorkspaceChange(finishWithoutTelegram(ws, () => new Date().toISOString()))}
+      >
+        {tr("setup.skipTelegram")}
+      </Button>
+    ) : null;
+
   const action = primary ? (
     <Button type="submit" size="large" pending={busy} disabled={primary.disabled}>
       {primary.label}
@@ -787,7 +802,12 @@ export function SetupAssistant(props: {
           <div className="ui-assistant__scroll">
             <div className="ui-assistant__content">{content}</div>
           </div>
-          {action ? <div className="ui-assistant__footer">{action}</div> : null}
+          {action || skip ? (
+            <div className="ui-assistant__footer">
+              {skip}
+              {action}
+            </div>
+          ) : null}
         </form>
       </main>
     </div>

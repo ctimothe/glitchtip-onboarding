@@ -1,9 +1,12 @@
 # GlitchTip Companion — Desktop App
 
-A free, MIT-open, direct-downloaded macOS app that connects a GlitchTip
-instance to Telegram and to coding agents. It deploys a small relay next to
-GlitchTip, pairs a Telegram forum group, gives each application its own topic,
-and installs agent files so Codex or Claude Code can read an incident.
+A free, MIT-open, direct-downloaded macOS app for the errors your GlitchTip
+servers collect. Its inbox reads every connected server's open errors once a
+minute, notifies you of new and returning ones, and lets you resolve or ignore
+them. Telegram alerts are optional: the app can deploy a small relay next to
+GlitchTip, pair a Telegram forum group and give each application its own
+topic. It also installs agent files so Codex or Claude Code can read an
+incident.
 
 Why a desktop app: setup needs a GlitchTip API token and a Telegram bot token
 while it talks to self-hosted instances and an SSH server. A Tauri shell keeps
@@ -11,9 +14,18 @@ those on the user's Mac, in the Keychain, with no hosted service in between.
 
 ## What it does
 
-- **Setup assistant** (first run, six stages): connect GlitchTip → deploy the
-  relay over SSH → pair Telegram → add the first application → connect a
-  repository's agent → verify the full path. Every change to a server or a
+- **Inbox**: open errors from every GlitchTip server you add (Settings → GlitchTip
+  servers), most recently seen first, with the latest event's stack trace,
+  Resolve, Ignore and Open in GlitchTip. It reads
+  `GET /api/0/organizations/{org}/issues/?query=is:unresolved` once a minute, on
+  focus and when the network returns, while the app runs; closing the window keeps
+  it in the menu bar. A Mac notification names each project with new errors or
+  errors back after being resolved; the first read of a server notifies nothing.
+- **Setup assistant** (first run): connect GlitchTip, then either continue
+  without Telegram straight to the inbox, or go on through five more stages:
+  deploy the relay over SSH → pair Telegram → add the first application →
+  connect a repository's agent → verify the full path. Settings → Telegram
+  alerts resumes those stages later. Every change to a server or a
   repository is shown as a preview and confirmed in a sheet before it runs.
 - **Sidebar screens** once setup is done: Overview, Applications (add more with
   the same assistant), Telegram, Relay server (health, logs, update,
@@ -26,9 +38,9 @@ those on the user's Mac, in the Keychain, with no hosted service in between.
   sidebar, sheets for every confirmation, and a translated menu bar: Settings… (⌘,) in the
   app menu, Add Application… (⌘N) under File, and the sidebar's destinations (⌘1–⌘6) under View.
 - English, Russian and Uzbek, following the Mac's language on first run.
-- Menu bar item with the latest alerts the relay delivered, read from its
-  audit on the server once a minute while the app runs; nothing runs on the
-  Mac when the app is closed — the relay delivers alerts on its own.
+- Menu bar item with the five most recently seen open errors and the number
+  notified since the window last had focus. Quit stops the inbox; the relay,
+  when deployed, keeps delivering to Telegram on its own.
 
 ## Companion scope
 

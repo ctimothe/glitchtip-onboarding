@@ -1,15 +1,15 @@
 # glitchtip-onboarding
 
-End-to-end GlitchTip observability: a JavaScript/TypeScript SDK, the Companion desktop app, a Telegram alert relay, and an agent skill that wires it all up.
+End-to-end GlitchTip observability: a JavaScript/TypeScript SDK, the Companion Mac app with an inbox of every open error, an optional Telegram alert relay, and an agent skill that wires it all up.
 
-> The goal is not "the SDK is installed". The goal is: **a real error, in production, reaches a human in Telegram, with enough context to fix it, and without carrying user data out of the box.** An install that stops short of that has produced a dashboard, and nobody looks at a dashboard at 2am.
+> The goal is not "the SDK is installed". The goal is: **a real error, in production, reaches a human, in the Companion inbox or in Telegram, with enough context to fix it, and without carrying user data out of the box.** An install that stops short of that has produced a dashboard, and nobody looks at a dashboard at 2am.
 
 ## Repo layout
 
 | Path | What it is |
 |---|---|
 | `packages/sdk` | Publishable TypeScript package (`@glitchtip-onboarding/sdk`): Node.js and browser runtimes plus React, Next.js, Express, NestJS, and Fastify adapters |
-| `apps/desktop` | Companion, the Tauri desktop app that walks through GlitchTip onboarding and pairs the Telegram relay |
+| `apps/desktop` | Companion, the Tauri macOS app: an inbox of open errors from every connected GlitchTip server, with notifications, resolve and ignore, plus setup for the optional Telegram relay |
 | `assets/relay` | Companion relay: zero-dependency multi-project Telegram alert relay, with deploy files in `assets/relay/deploy` |
 | `assets/agent-skill` | Agent skill content and its tests |
 | `assets/` (other) | Provisioning and verification scripts (`glitchtip_onboard.py`, `verify.py`) and scrubbing templates |

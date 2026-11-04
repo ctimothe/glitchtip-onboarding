@@ -50,3 +50,37 @@ export function SelectField({
     />
   );
 }
+
+/** The same pop-up button without a form label, for a toolbar; `label` is its accessible name. */
+export function PopupButton({
+  label,
+  value,
+  onChange,
+  options,
+}: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  options: Array<{ value: string; label: string }>;
+}) {
+  return (
+    <span className="ui-popup ui-popup--toolbar">
+      <select
+        aria-label={label}
+        title={label}
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        className="ui-popup__select"
+      >
+        {options.map((option) => (
+          <option key={option.value} value={option.value}>
+            {option.label}
+          </option>
+        ))}
+      </select>
+      <span className="ui-popup__indicator" aria-hidden="true">
+        <ChevronsUpDown size={11} strokeWidth={2.5} />
+      </span>
+    </span>
+  );
+}

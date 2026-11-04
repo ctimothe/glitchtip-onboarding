@@ -131,11 +131,12 @@ const stateOf = (payload, issue, event) => {
   return 'info'
 }
 
+// The issue's `permalink` is never used: GlitchTip 6.2.0 builds it from the project slug, a page
+// it does not serve. Its webhooks link the issue under its organization (Issue.get_detail_url()).
 const issueLink = (payload, issue, event) => {
   const attachment = attachmentOf(payload)
   const candidates = [
-    (issue && (issue.permalink || issue.web_url || issue.webUrl)) ||
-      '',
+    (issue && (issue.web_url || issue.webUrl)) || '',
     (event && (event.web_url || event.webUrl)) || '',
     attachment.title_link || '',
     (payload && payload.url) || '',

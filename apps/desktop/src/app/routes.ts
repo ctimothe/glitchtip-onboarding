@@ -13,6 +13,7 @@ export type SetupStage =
 
 export type AppRoute =
   | { kind: "setup"; stage: SetupStage }
+  | { kind: "inbox" }
   | { kind: "overview" }
   | { kind: "applications"; applicationId?: string }
   | { kind: "telegram" }

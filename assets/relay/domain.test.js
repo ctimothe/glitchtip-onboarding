@@ -56,7 +56,7 @@ test('normalizes the public event shape from webhook and API data', () => {
       window_minutes: '15',
       attachments: [{
         title: 'Webhook fallback',
-        title_link: 'https://errors.example.test/issues/1842/?notification=private#fragment',
+        title_link: 'https://errors.example.test/acme/issues/1842/?notification=private#fragment',
       }],
     },
     issue: enrichedIssue({ level: 'warning' }),
@@ -73,7 +73,7 @@ test('normalizes the public event shape from webhook and API data', () => {
     state: 'warning',
     title: 'Payment authorization slow',
     issueId: '1842',
-    issueUrl: 'https://errors.example.test/billing-api/issues/1842',
+    issueUrl: 'https://errors.example.test/acme/issues/1842/',
     release: 'a81c2f7',
     eventCount: 47,
     affectedUsers: 18,
@@ -182,7 +182,7 @@ test('optional API responses may be null', () => {
 test('uses the first safe issue deep link instead of an unsafe preferred candidate', () => {
   const value = normalizeEvent({
     payload: { url: 'https://errors.example.test/issues/1842/?secret=value' },
-    issue: { permalink: 'javascript:alert(1)' },
+    issue: { web_url: 'javascript:alert(1)' },
     application,
   })
 
@@ -192,7 +192,7 @@ test('uses the first safe issue deep link instead of an unsafe preferred candida
 test('rejects credential-bearing issue links and continues to a safe candidate', () => {
   const fallback = normalizeEvent({
     payload: { url: 'https://errors.example.test/issues/1842/?secret=value' },
-    issue: { permalink: 'https://token:password@errors.example.test/issues/1842/' },
+    issue: { web_url: 'https://token:password@errors.example.test/issues/1842/' },
     application,
   })
   const rejected = normalizeEvent({
@@ -202,6 +202,25 @@ test('rejects credential-bearing issue links and continues to a safe candidate',
 
   assert.equal(fallback.issueUrl, 'https://errors.example.test/issues/1842/')
   assert.equal(rejected.issueUrl, '')
+})
+
+// GlitchTip 6.2.0 builds `permalink` from the project slug, a page it does not serve; its alerts
+// link the issue under its organization (Issue.get_detail_url()), which the webhook carries.
+test('links an enriched issue to its organization page, not the project-slug permalink', () => {
+  const issue = enrichedIssue()
+  assert.equal(issue.permalink, 'https://errors.example.test/billing-api/issues/1842')
+
+  const value = normalizeEvent({ payload: glitchtipWebhook(), issue, event: latestEvent(), application })
+
+  assert.equal(value.issueUrl, 'https://errors.example.test/acme/issues/1842')
+  assert.equal(value.issueId, '1842')
+})
+
+test('sends no link rather than the project-slug permalink', () => {
+  const value = normalizeEvent({ issue: enrichedIssue(), application })
+
+  assert.equal(value.issueUrl, '')
+  assert.equal(value.issueId, '1842')
 })
 
 test('reads a real GlitchTip webhook without API enrichment', () => {

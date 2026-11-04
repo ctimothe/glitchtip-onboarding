@@ -37,6 +37,7 @@ const workspace: WorkspaceState = {
   name: "Main",
   locale,
   glitchtip: { baseUrl: "https://glitchtip.example.com", organizationSlug: "acme", verifiedAt: ago(60 * 24) },
+  sources: [],
   relay: {
     host: "relay.example.com",
     user: "deploy",
@@ -122,6 +123,73 @@ const audit: Array<Record<string, unknown>> = [
   { eventId: "e3:warning", applicationId: "web", state: "warning", status: "retrying", at: ago(38), retryCount: 2, failureCode: "telegram-403", nextRetryAt: ago(33) },
   { eventId: "e4:resolved", applicationId: "api", state: "resolved", status: "delivered", at: ago(4), retryCount: 0 },
 ];
+
+// Made-up open errors on the preview's GlitchTip, answered in place of the network so the inbox
+// has something to show; Resolve and Ignore drop the error until the page reloads.
+const previewIssues = [
+  ["4182", "TypeError: Cannot read properties of undefined (reading 'caseId')", "app/routes/case.$id.tsx in loader", "error", 128, 9, 3, "web", "Acme web"],
+  ["4179", "Telegram API 429: Too Many Requests", "relay/telegram.ts in send", "warning", 17, 1, 41, "api", "Acme API"],
+  ["4171", "PrismaClientKnownRequestError: Unique constraint failed on the fields: (`email`)", "src/users/create.ts in createUser", "error", 6, 4, 125, "api", "Acme API"],
+  ["4160", "ResizeObserver loop completed with undelivered notifications.", "app/root.tsx", "info", 311, 57, 60 * 5, "web", "Acme web"],
+].map(([id, title, culprit, level, count, users, minutes, slug, name]) => ({
+  id,
+  shortId: `${String(slug).toUpperCase()}-${id}`,
+  title,
+  culprit,
+  level,
+  status: "unresolved",
+  count: String(count),
+  userCount: users,
+  firstSeen: ago(Number(minutes) + 60 * 26),
+  lastSeen: ago(Number(minutes)),
+  project: { id: slug === "web" ? "1" : "2", slug, name },
+}));
+const previewEvent = {
+  eventID: "preview",
+  dateCreated: ago(3),
+  release: { version: "web@1.42.0" },
+  tags: [{ key: "environment", value: "production" }],
+  entries: [
+    {
+      type: "exception",
+      data: {
+        values: [
+          {
+            type: "TypeError",
+            value: "Cannot read properties of undefined (reading 'caseId')",
+            stacktrace: {
+              frames: [
+                { filename: "node_modules/react-router/dist/index.js", function: "callLoader", lineNo: 1180, colNo: 12, inApp: false },
+                { filename: "app/lib/cases.server.ts", function: "readCase", lineNo: 27, colNo: 18, inApp: true },
+                { filename: "app/routes/case.$id.tsx", function: "loader", lineNo: 14, colNo: 9, inApp: true },
+              ],
+            },
+          },
+        ],
+      },
+    },
+  ],
+};
+const realFetch = window.fetch.bind(window);
+window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+  const url = new URL(input instanceof Request ? input.url : String(input));
+  if (url.host !== "glitchtip.example.com") return realFetch(input, init);
+  const json = (body: unknown) => new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } });
+  const changed = /\/organizations\/acme\/issues\/(\d+)\/$/.exec(url.pathname);
+  if (init?.method === "PUT" && changed) {
+    previewIssues.splice(previewIssues.findIndex((issue) => issue.id === changed[1]), 1);
+    return json({});
+  }
+  if (url.pathname === "/api/0/organizations/acme/issues/") return json(previewIssues);
+  if (/\/issues\/\d+\/events\/latest\/$/.test(url.pathname)) return json(previewEvent);
+  // Connect a project: the organization and its team exist, any project is created, and its key read.
+  if (init?.method === "POST") return new Response("{}", { status: 201 });
+  if (url.pathname === "/api/0/organizations/acme/") return json({ slug: "acme" });
+  if (url.pathname.endsWith("/teams/")) return json([{ slug: "acme" }]);
+  if (url.pathname.endsWith("/keys/")) return json([{ dsn: { public: "https://preview@glitchtip.example.com/3" } }]);
+  if (url.pathname.endsWith("/projects/")) return json([]);
+  return new Response("{}", { status: 404 });
+};
 
 // Plugin-store files by resource id; only the workspace is pre-filled.
 const files: Record<string, Map<string, unknown>> = {};

@@ -25,6 +25,7 @@ STEPS=(
   'desktop-cargo|cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml'
   'security|bash scripts/security-scan'
   'companion-e2e|bash test/companion-e2e/run.sh'
+  'agent-docs|sh scripts/check-agent-docs'
 )
 
 # ---------------------------------------------------------------------------

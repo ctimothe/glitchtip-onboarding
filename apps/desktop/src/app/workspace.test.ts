@@ -20,16 +20,18 @@ vi.mock("@tauri-apps/plugin-store", () => ({
 import {
   createWorkspace,
   draftWorkspace,
+  inboxSources,
   loadWorkspace,
   migrateWorkspace,
   preferredLocale,
   saveWorkspace,
+  sourceTokenKey,
 } from "./workspace";
-import { isWorkspaceId } from "../lib/keychain";
+import { isSecretKey, isWorkspaceId } from "../lib/keychain";
 
 const GLITCHTIP = {
   baseUrl: "https://errors.example.com",
-  organizationSlug: "kelajak-merosi",
+  organizationSlug: "acme",
   verifiedAt: "2026-09-20T00:00:00.000Z",
 };
 
@@ -37,7 +39,7 @@ function minimalRaw(overrides: Record<string, unknown> = {}): Record<string, unk
   return {
     schemaVersion: 1,
     id: "ws-1",
-    name: "Kelajak Merosi",
+    name: "Acme",
     glitchtip: GLITCHTIP,
     ...overrides,
   };
@@ -67,9 +69,10 @@ function validWorkspaceRaw(): Record<string, unknown> {
   return structuredClone({
     schemaVersion: 1,
     id: "ws-1",
-    name: "Kelajak Merosi",
+    name: "Acme",
     locale: "ru",
     glitchtip: GLITCHTIP,
+    sources: [],
     relay: {
       host: "relay.example.com",
       user: "deploy",
@@ -86,7 +89,7 @@ function validWorkspaceRaw(): Record<string, unknown> {
       botId: 555,
       botUsername: "glitchtip_relay_bot",
       chatId: -1001234567890,
-      chatTitle: "Kelajak Merosi Alerts",
+      chatTitle: "Acme Alerts",
       allowedMemberIds: [111, 222],
       pairedAt: "2026-09-20T00:00:00.000Z",
     },
@@ -263,9 +266,10 @@ describe("workspace state", () => {
       expect(result).toEqual({
         schemaVersion: 1,
         id: "ws-1",
-        name: "Kelajak Merosi",
+        name: "Acme",
         locale: "uz",
         glitchtip: GLITCHTIP,
+        sources: [],
         relay: null,
         telegram: null,
         applications: [],
@@ -569,13 +573,14 @@ describe("workspace state", () => {
 
   describe("createWorkspace", () => {
     it("produces a valid, fully defaulted fresh workspace", () => {
-      const workspace = createWorkspace({ id: "ws-1", name: "Kelajak Merosi", glitchtip: GLITCHTIP });
+      const workspace = createWorkspace({ id: "ws-1", name: "Acme", glitchtip: GLITCHTIP });
       expect(workspace).toEqual({
         schemaVersion: 1,
         id: "ws-1",
-        name: "Kelajak Merosi",
+        name: "Acme",
         locale: "uz",
         glitchtip: GLITCHTIP,
+        sources: [],
         relay: null,
         telegram: null,
         applications: [],
@@ -598,7 +603,7 @@ describe("workspace state", () => {
       });
       getMock.mockImplementation(async () => persisted);
 
-      const workspace = createWorkspace({ id: "ws-1", name: "Kelajak Merosi", glitchtip: GLITCHTIP });
+      const workspace = createWorkspace({ id: "ws-1", name: "Acme", glitchtip: GLITCHTIP });
 
       await saveWorkspace(workspace);
       expect(setMock).toHaveBeenCalledWith("workspace", workspace);
@@ -638,5 +643,75 @@ describe("first-run workspace", () => {
     expect(preferredLocale(["uz-Latn-UZ"])).toBe("uz");
     expect(preferredLocale(["fr-FR"])).toBe("uz");
     expect(preferredLocale([])).toBe("uz");
+  });
+});
+
+describe("GlitchTip sources", () => {
+  const LEX = {
+    id: "lex",
+    name: "Lex Analytics",
+    baseUrl: "https://errors.example.org",
+    organizationSlug: "lex",
+    verifiedAt: "2026-10-29T00:00:00.000Z",
+  };
+
+  it("defaults to no extra servers when the field is absent", () => {
+    expect(migrateWorkspace(minimalRaw()).sources).toEqual([]);
+  });
+
+  it("keeps a valid extra server", () => {
+    expect(migrateWorkspace(minimalRaw({ sources: [LEX] })).sources).toEqual([LEX]);
+  });
+
+  it("names each malformed field without its value", () => {
+    expect(() =>
+      migrateWorkspace(
+        minimalRaw({ sources: [{ ...LEX, id: "Lex/1", baseUrl: "ftp://x", organizationSlug: "", name: "" }] }),
+      ),
+    ).toThrow("Invalid workspace state: sources.id, sources.name, sources.baseUrl, sources.organizationSlug");
+  });
+
+  it("accepts only HTTPS for an extra server, since its token goes with every request", () => {
+    expect(() => migrateWorkspace(minimalRaw({ sources: [{ ...LEX, baseUrl: "http://errors.example.org" }] }))).toThrow(
+      "sources.baseUrl",
+    );
+  });
+
+  it("rejects a non-array, a reserved id, a repeated id and a repeat of the primary server", () => {
+    expect(() => migrateWorkspace(minimalRaw({ sources: {} }))).toThrow("sources");
+    expect(() => migrateWorkspace(minimalRaw({ sources: [{ ...LEX, id: "primary" }] }))).toThrow("sources.id");
+    expect(() => migrateWorkspace(minimalRaw({ sources: [LEX, { ...LEX, baseUrl: "https://other.example" }] }))).toThrow(
+      "sources.id",
+    );
+    expect(() =>
+      migrateWorkspace(minimalRaw({ sources: [{ ...LEX, baseUrl: `${GLITCHTIP.baseUrl}/`, organizationSlug: GLITCHTIP.organizationSlug }] })),
+    ).toThrow("sources.baseUrl");
+  });
+
+  it("lists the primary server first, then the extra ones, each with its own Keychain item", () => {
+    const ws = migrateWorkspace(minimalRaw({ sources: [LEX] }));
+    expect(inboxSources(ws)).toEqual([
+      {
+        id: "primary",
+        verifiedAt: GLITCHTIP.verifiedAt,
+        name: "errors.example.com",
+        baseUrl: GLITCHTIP.baseUrl,
+        organizationSlug: GLITCHTIP.organizationSlug,
+        tokenKey: "glitchtip-token",
+      },
+      {
+        id: "lex",
+        verifiedAt: LEX.verifiedAt,
+        name: "Lex Analytics",
+        baseUrl: LEX.baseUrl,
+        organizationSlug: "lex",
+        tokenKey: "glitchtip-token.lex",
+      },
+    ]);
+    expect(isSecretKey(sourceTokenKey("lex"))).toBe(true);
+  });
+
+  it("has no inbox source before the primary server is connected", () => {
+    expect(inboxSources(draftWorkspace("ws-1", "en"))).toEqual([]);
   });
 });
