@@ -14,7 +14,7 @@
 // STRICT VALIDATION, NOT COERCION (controller review of 732b15c): a
 // default is filled only for a field that is ABSENT from the input, and
 // only for the fields explicitly named below — locale, applications,
-// relay, telegram, onboarding (as whole containers), and, per application,
+// relay, telegram, onboarding, sources (as whole containers), and, per application,
 // alertPreset/enabledStates. Every other field throws when it is present
 // but malformed, or when it is required and missing. Two fields are a
 // deliberate, narrow exception: ApplicationState.verifiedAt and
@@ -41,6 +41,11 @@ export type WorkspaceState = {
     organizationSlug: string;
     verifiedAt: string;
   };
+  /**
+   * GlitchTip servers the inbox reads besides `glitchtip`, which stays the
+   * primary one: applications, the relay and the agent helper use only that.
+   */
+  sources: GlitchTipSource[];
   relay: RelayDeployment | null;
   telegram: TelegramWorkspace | null;
   applications: ApplicationState[];
@@ -48,6 +53,26 @@ export type WorkspaceState = {
     completedAt: string | null;
     currentStage: 1 | 2 | 3 | 4 | 5 | 6;
   };
+};
+
+export type GlitchTipSource = {
+  /** Names the source's Keychain item, so it follows the Keychain's rules. */
+  id: string;
+  name: string;
+  baseUrl: string;
+  organizationSlug: string;
+  verifiedAt: string;
+};
+
+/** One server as the inbox reads it, the primary one included. */
+export type InboxSource = {
+  id: string;
+  /** When this connection was proved; a server removed and added again gets a new one. */
+  verifiedAt: string;
+  name: string;
+  baseUrl: string;
+  organizationSlug: string;
+  tokenKey: string;
 };
 
 export type ApplicationState = {
@@ -127,6 +152,10 @@ const RELAY_STATUSES: RelayDeployment["status"][] = ["unknown", "healthy", "degr
 // shape distinguishes them from a basic group (short negative id) or a
 // private/user chat (positive id). Matched against the decimal string form.
 const PRIVATE_SUPERGROUP_RE = /^-100[1-9]\d*$/;
+
+const PRIMARY_SOURCE_ID = "primary";
+const SOURCE_ID_RE = /^[a-z0-9][a-z0-9-]{0,39}$/;
+const PRIMARY_TOKEN_KEY = "glitchtip-token";
 
 // ---------------------------------------------------------------------------
 // Primitive validators (type predicates — each narrows the checked value).
@@ -270,6 +299,43 @@ function migrateGlitchtip(value: unknown, errors: string[]): WorkspaceState["gli
   }
 
   return { baseUrl, organizationSlug, verifiedAt };
+}
+
+function sameServer(a: { baseUrl: string; organizationSlug: string }, b: { baseUrl: string; organizationSlug: string }) {
+  const base = (url: string) => url.trim().replace(/\/+$/, "").toLowerCase();
+  return base(a.baseUrl) === base(b.baseUrl) && a.organizationSlug === b.organizationSlug;
+}
+
+function migrateSources(
+  value: unknown,
+  primary: WorkspaceState["glitchtip"],
+  errors: string[],
+): GlitchTipSource[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) {
+    errors.push("sources");
+    return [];
+  }
+  const ids = new Set<string>();
+  return value.map((entry) => {
+    const raw = isRecord(entry) ? entry : {};
+    const source: GlitchTipSource = { id: "", name: "", baseUrl: "", organizationSlug: "", verifiedAt: "" };
+    if (typeof raw.id === "string" && SOURCE_ID_RE.test(raw.id) && raw.id !== PRIMARY_SOURCE_ID && !ids.has(raw.id)) {
+      source.id = raw.id;
+      ids.add(raw.id);
+    } else errors.push("sources.id");
+    if (isNonEmptyString(raw.name)) source.name = raw.name;
+    else errors.push("sources.name");
+    // HTTPS only: the token goes with every request.
+    if (isAbsoluteHttpUrl(raw.baseUrl) && raw.baseUrl.startsWith("https://")) source.baseUrl = raw.baseUrl;
+    else errors.push("sources.baseUrl");
+    if (isNonEmptyString(raw.organizationSlug)) source.organizationSlug = raw.organizationSlug;
+    else errors.push("sources.organizationSlug");
+    if (isNonEmptyString(raw.verifiedAt)) source.verifiedAt = raw.verifiedAt;
+    else errors.push("sources.verifiedAt");
+    if (source.baseUrl !== "" && sameServer(source, primary)) errors.push("sources.baseUrl");
+    return source;
+  });
 }
 
 function migrateAgent(value: unknown, errors: string[]): AgentIntegration | null {
@@ -576,6 +642,7 @@ export function migrateWorkspace(input: unknown): WorkspaceState {
   }
 
   const glitchtip = migrateGlitchtip(raw.glitchtip, errors);
+  const sources = migrateSources(raw.sources, glitchtip, errors);
 
   let applications: ApplicationState[];
   if (raw.applications === undefined) {
@@ -600,7 +667,7 @@ export function migrateWorkspace(input: unknown): WorkspaceState {
     throw new Error(`Invalid workspace state: ${unique.join(", ")}`);
   }
 
-  return { schemaVersion: 1, id, name, locale, glitchtip, relay, telegram, applications, onboarding };
+  return { schemaVersion: 1, id, name, locale, glitchtip, sources, relay, telegram, applications, onboarding };
 }
 
 /** Build a valid, freshly defaulted workspace (schema v1, stage 1, no applications). */
@@ -643,11 +710,41 @@ export function draftWorkspace(id: string, locale: WorkspaceState["locale"]): Wo
     name: "Main",
     locale,
     glitchtip: { baseUrl: "", organizationSlug: "", verifiedAt: "" },
+    sources: [],
     relay: null,
     telegram: null,
     applications: [],
     onboarding: { completedAt: null, currentStage: 1 },
   };
+}
+
+/** The Keychain item that holds an extra source's API token. */
+export function sourceTokenKey(sourceId: string): string {
+  return `${PRIMARY_TOKEN_KEY}.${sourceId}`;
+}
+
+/** Every server the inbox reads: the primary one first, once it is connected. */
+export function inboxSources(ws: WorkspaceState): InboxSource[] {
+  if (ws.glitchtip.baseUrl === "") return [];
+  const primary: InboxSource = {
+    id: PRIMARY_SOURCE_ID,
+    verifiedAt: ws.glitchtip.verifiedAt,
+    name: new URL(ws.glitchtip.baseUrl).host,
+    baseUrl: ws.glitchtip.baseUrl,
+    organizationSlug: ws.glitchtip.organizationSlug,
+    tokenKey: PRIMARY_TOKEN_KEY,
+  };
+  return [
+    primary,
+    ...ws.sources.map((source) => ({
+      id: source.id,
+      verifiedAt: source.verifiedAt,
+      name: source.name,
+      baseUrl: source.baseUrl,
+      organizationSlug: source.organizationSlug,
+      tokenKey: sourceTokenKey(source.id),
+    })),
+  ];
 }
 
 /** The first supported language in the system's preference order; Uzbek otherwise. */

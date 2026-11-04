@@ -1,7 +1,15 @@
 import { describe, expect, it } from "vitest";
 
 import type { WorkspaceState } from "../app/workspace";
-import { ALERT_RULE_CONTRACT, SetupError, runStage, type SetupDeps, type SetupInput } from "./setup-machine";
+import {
+  ALERT_RULE_CONTRACT,
+  SetupError,
+  finishWithoutTelegram,
+  resumeTelegramSetup,
+  runStage,
+  type SetupDeps,
+  type SetupInput,
+} from "./setup-machine";
 
 const NOW = () => "2026-10-15T10:00:00.000Z";
 
@@ -12,6 +20,7 @@ function workspace(stage: WorkspaceState["onboarding"]["currentStage"]): Workspa
     name: "Test",
     locale: "en",
     glitchtip: { baseUrl: "", organizationSlug: "", verifiedAt: "" },
+    sources: [],
     relay:
       stage >= 3
         ? {
@@ -293,5 +302,24 @@ describe("setup assistant state machine", () => {
     expect(ALERT_RULE_CONTRACT.tags).toEqual(["environment", "release"]);
     expect(ALERT_RULE_CONTRACT.threshold).toEqual({ events: 3, windowMinutes: 15 });
     expect(ALERT_RULE_CONTRACT.enabledStates).not.toContain("info");
+  });
+});
+
+describe("setup without Telegram", () => {
+  it("finishes at the relay stage when nothing of Telegram exists yet", () => {
+    const next = finishWithoutTelegram(workspace(2), NOW);
+    expect(next.onboarding).toEqual({ completedAt: NOW(), currentStage: 2 });
+  });
+
+  it("can also be left after the relay is deployed, but not before GlitchTip or once an application exists", () => {
+    expect(finishWithoutTelegram(workspace(3), NOW).onboarding).toEqual({ completedAt: NOW(), currentStage: 3 });
+    expect(() => finishWithoutTelegram(workspace(1), NOW)).toThrow("stage-blocked");
+    expect(() => finishWithoutTelegram(workspace(5), NOW)).toThrow("stage-blocked");
+  });
+
+  it("resumes where it was left: the relay, then the pairing", () => {
+    expect(resumeTelegramSetup(finishWithoutTelegram(workspace(2), NOW)).onboarding).toEqual({ completedAt: null, currentStage: 2 });
+    expect(resumeTelegramSetup(finishWithoutTelegram(workspace(3), NOW)).onboarding).toEqual({ completedAt: null, currentStage: 3 });
+    expect(() => resumeTelegramSetup(workspace(2))).toThrow("stage-blocked");
   });
 });

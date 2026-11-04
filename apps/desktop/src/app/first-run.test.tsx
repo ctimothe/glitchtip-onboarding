@@ -105,6 +105,7 @@ describe("first run", () => {
     stored.workspace = completed([{ project: "api", verifiedAt: "2026-10-02T00:00:00Z" }, { project: "web", verifiedAt: null }]);
     pending.mockResolvedValue({ project: "web" });
     render(<App />);
+    await userEvent.click(await screen.findByRole("button", { name: "Overview" }));
     expect(await screen.findByText(t("en", "overview.macRelayProject", { project: "web" }))).toBeTruthy();
     expect(retire).toHaveBeenCalledWith(["api"]);
     expect(inspect).not.toHaveBeenCalled();
@@ -114,6 +115,7 @@ describe("first run", () => {
     stored.workspace = completed([{ project: "api", verifiedAt: "2026-10-02T00:00:00Z" }]);
     pending.mockResolvedValue({ project: null });
     render(<App />);
+    await userEvent.click(await screen.findByRole("button", { name: "Overview" }));
     const row = await screen.findByTestId("health-mac-relay");
     expect(within(row).getByText(t("en", "overview.macRelayUnknown"))).toBeTruthy();
     turnOff.mockRejectedValueOnce(new Error("vault-not-verified"));

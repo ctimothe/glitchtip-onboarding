@@ -54,7 +54,8 @@ async function getJson(
   token: string,
   fetchFn: typeof fetch,
 ): Promise<{ status: number; body: unknown }> {
-  const res = await fetchFn(url, { headers: authHeaders(token) });
+  // A redirect could carry the token to another host; GlitchTip's API never needs one.
+  const res = await fetchFn(url, { headers: authHeaders(token), redirect: "error" });
   let body: unknown;
   try {
     body = await res.json();
@@ -68,6 +69,20 @@ async function getJson(
 // (references/api.md); app.glitchtip.com answers 404 there and serves it at
 // /api/openapi.json (checked 2026-10-28). The first one that answers is used.
 const SCHEMA_PATHS = ["/api/0/openapi.json", "/api/openapi.json"];
+// Some self-hosted servers publish no schema at either path (seen on one
+// on 2026-10-29). Their public settings
+// still carry keys only GlitchTip has, so they confirm the instance instead.
+const SETTINGS_PATH = "/api/settings/";
+
+function isGlitchTipSettings(doc: unknown): boolean {
+  const record = doc as Record<string, unknown> | null;
+  return (
+    typeof record === "object" &&
+    record !== null &&
+    typeof record.iPaidForGlitchTip === "boolean" &&
+    typeof record.enableOrganizationCreation === "boolean"
+  );
+}
 
 /** Phase 0 ground truth: confirm the base URL serves the GlitchTip API. */
 export async function checkInstance(
@@ -84,7 +99,11 @@ export async function checkInstance(
       res = await fetchFn(`${base}${path}`, { signal: controller.signal });
       if (res.ok) break;
     }
-    if (!res?.ok) throw new Error(NOT_GLITCHTIP);
+    if (!res?.ok) {
+      const settings = await fetchFn(`${base}${SETTINGS_PATH}`, { signal: controller.signal });
+      if (!settings.ok || !isGlitchTipSettings(await settings.json())) throw new Error(NOT_GLITCHTIP);
+      return { url: base, glitchtipTitle: true, latencyMs: Date.now() - started };
+    }
     let doc: unknown;
     try {
       doc = await res.json();
@@ -227,6 +246,223 @@ export async function fetchInventory(
   return { org, team, project, key, alertRule, teams, projects };
 }
 
+// ------------------------------------------------------------------ issues
+//
+// What the inbox reads and changes. Shapes checked against the schema of a
+// live self-hosted server on 2026-10-29: `IssueSchema` from the org-wide list,
+// `UpdateIssueSchema` for status changes. Entries the app cannot use are
+// skipped rather than failing the whole page.
+
+export type IssueStatus = "unresolved" | "resolved" | "ignored";
+
+export type Issue = {
+  id: string;
+  shortId: string;
+  title: string;
+  culprit: string;
+  level: string;
+  status: IssueStatus;
+  /** Events in this issue; GlitchTip sends it as a string. */
+  count: number;
+  userCount: number;
+  firstSeen: string;
+  lastSeen: string;
+  project: { id: string; slug: string; name: string };
+};
+
+export type IssuePage = { issues: Issue[]; nextCursor: string | null };
+
+export type StackFrame = {
+  filename: string;
+  function: string;
+  lineNo: number | null;
+  colNo: number | null;
+  inApp: boolean;
+};
+
+export type IssueEvent = {
+  eventId: string;
+  dateCreated: string;
+  message: string;
+  release: string | null;
+  tags: Array<{ key: string; value: string }>;
+  /** Each exception's frames run innermost first, the order people read them in. */
+  exceptions: Array<{ type: string; value: string; frames: StackFrame[] }>;
+};
+
+const ISSUE_STATUSES: readonly IssueStatus[] = ["unresolved", "resolved", "ignored"];
+const PAGE_SIZE = 100;
+
+function text(value: unknown): string {
+  return typeof value === "string" ? value : "";
+}
+
+function whole(value: unknown): number | null {
+  const n = typeof value === "string" ? Number(value) : value;
+  return typeof n === "number" && Number.isFinite(n) ? n : null;
+}
+
+function toIssue(raw: unknown): Issue | null {
+  const r = raw as Record<string, unknown> | null;
+  if (typeof r !== "object" || r === null) return null;
+  if (typeof r.id !== "string" || typeof r.title !== "string") return null;
+  const project = (r.project ?? {}) as Record<string, unknown>;
+  const status = ISSUE_STATUSES.find((s) => s === r.status) ?? "unresolved";
+  return {
+    id: r.id,
+    shortId: text(r.shortId),
+    title: r.title,
+    culprit: text(r.culprit),
+    level: text(r.level),
+    status,
+    count: whole(r.count) ?? 0,
+    userCount: whole(r.userCount) ?? 0,
+    firstSeen: text(r.firstSeen),
+    lastSeen: text(r.lastSeen),
+    project: { id: String(project.id ?? ""), slug: text(project.slug), name: text(project.name) },
+  };
+}
+
+/** The `cursor` of the `rel="next"` link, when that link says it has results. */
+function nextCursor(link: string | null): string | null {
+  if (!link) return null;
+  for (const part of link.split(/,\s*(?=<)/)) {
+    if (!/;\s*rel="next"/.test(part) || !/;\s*results="true"/.test(part)) continue;
+    return /;\s*cursor="([^"]*)"/.exec(part)?.[1] ?? null;
+  }
+  return null;
+}
+
+/** One page of the organization's unresolved issues, most recently seen first. GET only. */
+export async function listIssues(
+  baseUrl: string,
+  token: string,
+  org: string,
+  options: { cursor?: string } = {},
+  fetchFn: typeof fetch = fetch,
+): Promise<IssuePage> {
+  const base = normalizeBase(baseUrl);
+  const url = new URL(`${base}/api/0/organizations/${encodeURIComponent(org)}/issues/`);
+  url.searchParams.set("query", "is:unresolved");
+  url.searchParams.set("sort", "-last_seen");
+  url.searchParams.set("limit", String(PAGE_SIZE));
+  if (options.cursor) url.searchParams.set("cursor", options.cursor);
+  const res = await fetchFn(url.toString(), { headers: authHeaders(token), redirect: "error" });
+  if (!res.ok) throw new Error(`GET /api/0/organizations/${org}/issues/ -> HTTP ${res.status}`);
+  const body: unknown = await res.json();
+  // Anything but a list would read as "every issue resolved" and fire them all as returning later.
+  if (!Array.isArray(body)) throw new Error(`GET /api/0/organizations/${org}/issues/ -> not a list`);
+  const issues = body.map(toIssue).filter((i): i is Issue => i !== null);
+  return { issues, nextCursor: nextCursor(res.headers?.get("Link") ?? null) };
+}
+
+function toFrame(raw: unknown): StackFrame | null {
+  const f = raw as Record<string, unknown> | null;
+  if (typeof f !== "object" || f === null) return null;
+  return {
+    filename: text(f.filename),
+    function: text(f.function),
+    lineNo: whole(f.lineNo),
+    colNo: whole(f.colNo),
+    inApp: f.inApp === true,
+  };
+}
+
+/** The issue's latest event, reduced to what the inbox shows. GET only. */
+export async function latestEvent(
+  baseUrl: string,
+  token: string,
+  issueId: string,
+  fetchFn: typeof fetch = fetch,
+): Promise<IssueEvent> {
+  const base = normalizeBase(baseUrl);
+  const res = await getJson(
+    `${base}/api/0/issues/${encodeURIComponent(issueId)}/events/latest/`,
+    token,
+    fetchFn,
+  );
+  if (res.status < 200 || res.status >= 300) {
+    throw new Error(`GET /api/0/issues/${issueId}/events/latest/ -> HTTP ${res.status}`);
+  }
+  const r = (res.body ?? {}) as Record<string, unknown>;
+  const entries = Array.isArray(r.entries) ? (r.entries as Record<string, unknown>[]) : [];
+  const exceptionEntry = entries.find((e) => e?.type === "exception");
+  const values = ((exceptionEntry?.data as { values?: unknown } | undefined)?.values ?? []) as unknown[];
+  const exceptions = (Array.isArray(values) ? values : []).map((raw) => {
+    const v = (raw ?? {}) as Record<string, unknown>;
+    const frames = ((v.stacktrace as { frames?: unknown } | undefined)?.frames ?? []) as unknown[];
+    return {
+      type: text(v.type),
+      value: text(v.value),
+      frames: (Array.isArray(frames) ? frames : [])
+        .map(toFrame)
+        .filter((f): f is StackFrame => f !== null)
+        .reverse(),
+    };
+  });
+  const tags = (Array.isArray(r.tags) ? (r.tags as Record<string, unknown>[]) : [])
+    .filter((t) => typeof t?.key === "string" && typeof t?.value === "string")
+    .map((t) => ({ key: t.key as string, value: t.value as string }));
+  // GlitchTip 6.2.0 sends no `release` object here; the release arrives only as a tag.
+  const version = (r.release as { version?: unknown } | null)?.version;
+  const release = typeof version === "string" ? version : (tags.find((t) => t.key === "release")?.value ?? null);
+  return {
+    eventId: text(r.eventID),
+    dateCreated: text(r.dateCreated),
+    message: text(r.message),
+    release,
+    tags,
+    exceptions,
+  };
+}
+
+/**
+ * The issue's page on its own server, under its organization, as GlitchTip's own alerts link it.
+ * The server's `permalink` is not used: 6.2.0 builds it from the project slug, a page it does not serve.
+ */
+export function issueUrl(baseUrl: string, org: string, issue: Pick<Issue, "id">): string {
+  return `${normalizeBase(baseUrl)}/${encodeURIComponent(org)}/issues/${encodeURIComponent(issue.id)}`;
+}
+
+/** The DSN an application reports to: the project's first key. GET only. */
+export async function projectDsn(
+  baseUrl: string,
+  token: string,
+  org: string,
+  project: string,
+  fetchFn: typeof fetch = fetch,
+): Promise<string> {
+  const path = `/api/0/projects/${encodeURIComponent(org)}/${encodeURIComponent(project)}/keys/`;
+  const res = await getJson(`${normalizeBase(baseUrl)}${path}`, token, fetchFn);
+  if (res.status < 200 || res.status >= 300) throw new Error(`GET ${path} -> HTTP ${res.status}`);
+  const keys = Array.isArray(res.body) ? (res.body as Array<{ dsn?: { public?: unknown } }>) : [];
+  const dsn = keys.map((key) => key.dsn?.public).find((value): value is string => typeof value === "string");
+  if (!dsn) throw new Error(`GET ${path} -> no key`);
+  return dsn;
+}
+
+/** Resolve, ignore or reopen one issue. */
+export async function setIssueStatus(
+  baseUrl: string,
+  token: string,
+  org: string,
+  issueId: string,
+  status: IssueStatus,
+  fetchFn: typeof fetch = fetch,
+): Promise<void> {
+  const base = normalizeBase(baseUrl);
+  const res = await fetchFn(
+    `${base}/api/0/organizations/${encodeURIComponent(org)}/issues/${encodeURIComponent(issueId)}/`,
+    {
+      method: "PUT",
+      headers: { ...authHeaders(token), "Content-Type": "application/json" },
+      redirect: "error",
+      body: JSON.stringify({ status }),
+    },
+  );
+  if (!res.ok) throw new Error(`PUT /api/0/organizations/${org}/issues/${issueId}/ -> HTTP ${res.status}`);
+}
+
 // ---------------------------------------------------------------- provision
 //
 // Create branch mirroring `assets/glitchtip_onboard.py` (same dependency
@@ -299,6 +535,7 @@ async function sendJson(
       "Content-Type": "application/json",
     },
     body: JSON.stringify(body),
+    redirect: "error",
   });
   let parsed: unknown;
   try {

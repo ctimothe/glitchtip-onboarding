@@ -37,6 +37,7 @@ function workspace(patch: Partial<WorkspaceState> = {}): WorkspaceState {
     name: "Test",
     locale: "ru",
     glitchtip: { baseUrl: "https://gt.example.com/", organizationSlug: "acme", verifiedAt: "2026-10-28T10:00:00.000Z" },
+    sources: [],
     relay: null,
     telegram: null,
     applications: [],

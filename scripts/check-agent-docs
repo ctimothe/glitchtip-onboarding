@@ -1,0 +1,174 @@
+#!/bin/sh
+# check-agent-docs v4 (2026-09-23)
+# Canonical copy: ~/.agents/scripts/check-agent-docs (github.com/ctimothe/agents).
+# Vendored into each repo as scripts/check-agent-docs and run as the `agent-docs` step of
+# ./scripts/check. Update vendored copies by copying the canonical file, never by editing them.
+#
+# Enforces the instruction-file layout recorded in ~/.agents/docs/adr/0001-agent-instruction-files.md:
+#   AGENTS.md (root)        canonical for every harness, <= 20 KB, holds the only "## Commands"
+#   CLAUDE.md (root)        imports @AGENTS.md, <= 60 lines, never imports CONTEXT.md / ROUTING.md
+#   <dir>/AGENTS.md         <= 12 KB, with a sibling CLAUDE.md symlink pointing at it
+#   docs/agents/<topic>.md  <= 12 KB, closed `paths:` frontmatter, linked from .claude/rules/<topic>.md
+#   ROUTING.md              must not exist anywhere
+# plus: backticked *.md pointers in instruction files resolve, no secret-shaped strings, and no
+# live file LINKS to ROUTING.md. A line containing "agent-docs: allow" is exempt from the pointer
+# and ROUTING.md-link checks.
+#
+# Usage: scripts/check-agent-docs            (from inside the repository)
+# Exit:  0 pass, 1 violations found, 2 cannot run (needs git and a work tree).
+
+set -u
+set -f          # no globbing of paths such as app/[slug]/page.tsx
+IFS='
+'               # split command substitutions on newlines only, so paths may contain spaces
+
+ROOT_MAX=${AGENT_DOCS_ROOT_MAX:-20480}
+NESTED_MAX=${AGENT_DOCS_NESTED_MAX:-12288}
+CLAUDE_MAX_LINES=${AGENT_DOCS_CLAUDE_MAX_LINES:-60}
+# Directories whose instruction-shaped files are not this repo's instructions.
+SKIP_RE='(^|/)(node_modules|\.agents|\.agentic|\.claude/worktrees|\.worktrees|venv|\.venv)/'
+
+git rev-parse --is-inside-work-tree >/dev/null 2>&1 || {
+  echo "agent-docs: needs git and a work tree (run it from inside the repository)" >&2
+  exit 2
+}
+cd "$(git rev-parse --show-toplevel)" || exit 2
+
+WORK=$(mktemp -d "${TMPDIR:-/tmp}/agent-docs.XXXXXX") || exit 2
+trap 'rm -rf "$WORK"' EXIT HUP INT TERM
+ERRS="$WORK/errors"; : > "$ERRS"
+err() { printf 'agent-docs: %s\n' "$*" >> "$ERRS"; }
+bytes() { wc -c < "$1" | tr -d ' '; }
+
+# Every file git would ship or add (tracked + untracked-not-ignored) that still exists on disk
+# (a symlink counts even when dangling), minus trees that are not this repo's instructions.
+git ls-files --cached --others --exclude-standard | sort -u | grep -vE "$SKIP_RE" > "$WORK/all"
+: > "$WORK/files"
+while IFS= read -r f; do
+  { [ -e "$f" ] || [ -L "$f" ]; } && printf '%s\n' "$f" >> "$WORK/files"
+done < "$WORK/all"
+FILES="$WORK/files"
+pick() { grep -E "$1" "$FILES" || true; }
+
+# --- root files -----------------------------------------------------------------------------
+if [ ! -f AGENTS.md ]; then
+  err "AGENTS.md is missing at the repository root"
+else
+  n=$(bytes AGENTS.md)
+  [ "$n" -le "$ROOT_MAX" ] || err "AGENTS.md is $n bytes (budget $ROOT_MAX); move area knowledge to <dir>/AGENTS.md or docs/agents/"
+fi
+if [ ! -f CLAUDE.md ]; then
+  err "CLAUDE.md is missing at the repository root (it must contain @AGENTS.md)"
+else
+  lines=$(wc -l < CLAUDE.md | tr -d ' ')
+  [ "$lines" -le "$CLAUDE_MAX_LINES" ] || err "CLAUDE.md is $lines lines (budget $CLAUDE_MAX_LINES); Claude-only extras belong here, everything else in AGENTS.md"
+  grep -qE '^[[:space:]]*@(\./)?AGENTS\.md[[:space:]]*$' CLAUDE.md || err "CLAUDE.md does not import @AGENTS.md on its own line"
+fi
+
+# --- imports (any path form) and ROUTING.md ---------------------------------------------------
+for f in $(pick '(^|/)(CLAUDE|AGENTS)\.md$'); do
+  [ -f "$f" ] && [ ! -L "$f" ] || continue
+  awk -v f="$f" '
+    /^[[:space:]]*```/ { fence = !fence; next }
+    !fence && /(^|[^`[:alnum:]])@[^[:space:]`]*(CONTEXT|ROUTING)\.md/ {
+      printf "agent-docs: %s:%d imports CONTEXT.md or ROUTING.md (CONTEXT.md is read on demand; ROUTING.md is retired)\n", f, NR
+    }' "$f" >> "$ERRS"
+done
+for f in $(pick '(^|/)ROUTING\.md$'); do
+  err "$f exists; ROUTING.md is retired (content lives in the AGENTS.md Map and nested AGENTS.md files)"
+done
+
+# --- nested AGENTS.md / CLAUDE.md -----------------------------------------------------------
+for f in $(pick '/AGENTS\.md$'); do
+  d=${f%/AGENTS.md}
+  n=$(bytes "$f")
+  [ "$n" -le "$NESTED_MAX" ] || err "$f is $n bytes (budget $NESTED_MAX); split it by subdirectory or topic"
+  if [ ! -L "$d/CLAUDE.md" ]; then
+    err "$d/CLAUDE.md must be a symlink to AGENTS.md (ln -s AGENTS.md $d/CLAUDE.md)"
+  elif [ "$(readlink "$d/CLAUDE.md")" != "AGENTS.md" ]; then
+    err "$d/CLAUDE.md points at '$(readlink "$d/CLAUDE.md")', expected 'AGENTS.md'"
+  fi
+done
+for f in $(pick '/CLAUDE\.md$'); do
+  if [ -L "$f" ]; then
+    [ -e "$f" ] || err "$f is a dangling symlink"
+  else
+    err "$f is a regular file; nested knowledge goes in ${f%CLAUDE.md}AGENTS.md with CLAUDE.md as a symlink"
+  fi
+done
+
+# --- topic files and path-scoped rule links --------------------------------------------------
+for f in $(pick '^docs/agents/[^/]+\.md$'); do
+  n=$(bytes "$f")
+  [ "$n" -le "$NESTED_MAX" ] || err "$f is $n bytes (budget $NESTED_MAX); split the topic"
+  awk 'NR == 1 { if ($0 != "---") exit 1; next }
+       $0 == "---" { closed = 1; exit }
+       /^paths:/ { found = 1 }
+       END { exit (closed && found) ? 0 : 1 }' "$f" \
+    || err "$f needs YAML frontmatter (--- ... ---) with a paths: list"
+  base=${f##*/}
+  link=".claude/rules/$base"
+  if [ ! -L "$link" ]; then
+    err "$link must be a symlink to ../../$f so Claude loads the topic on matching reads"
+  elif [ "$(readlink "$link")" != "../../$f" ]; then
+    err "$link points at '$(readlink "$link")', expected '../../$f'"
+  fi
+done
+for f in $(pick '^\.claude/rules/'); do
+  [ -L "$f" ] && [ ! -e "$f" ] && err "$f is a dangling symlink"
+done
+
+# --- single Commands list -------------------------------------------------------------------
+if [ -f AGENTS.md ]; then
+  grep -qE '^##[[:space:]]+Commands[[:space:]]*$' AGENTS.md || err "AGENTS.md has no '## Commands' section"
+fi
+for f in CLAUDE.md CONTEXT.md; do
+  [ -f "$f" ] && grep -qE '^##[[:space:]]+Commands[[:space:]]*$' "$f" \
+    && err "$f has a '## Commands' section; commands live only in AGENTS.md"
+done
+
+# --- pointers resolve -----------------------------------------------------------------------
+# A backticked `name.md` must resolve relative to the repo root or the file's own directory.
+# Not pointers: link text (a token directly followed by "](" — the link target is what matters),
+# placeholders (YYYY), absolute/home/parent paths, URLs. A bare basename is accepted when some
+# tracked file has that name, since prose often names a document without its directory.
+for f in $(pick '(^|/)(AGENTS|CLAUDE|CONTEXT)\.md$|^docs/agents/[^/]+\.md$'); do
+  [ -f "$f" ] && [ ! -L "$f" ] || continue
+  dir=$(dirname "$f")
+  grep -noE '`[A-Za-z0-9_./-]+\.md`(\]\()?' "$f" | grep -v '](' | while IFS=: read -r ln tok; do
+    sed -n "${ln}p" "$f" | grep -q 'agent-docs: allow' && continue
+    p=$(printf '%s' "$tok" | tr -d '`')
+    case "$p" in /*|~*|*..*|http*|*YYYY*) continue ;; esac
+    case "$p" in ROUTING.md|*/ROUTING.md) continue ;; esac   # retirement prose, not a pointer
+    [ -e "$p" ] || [ -e "$dir/$p" ] && continue
+    case "$p" in */*) ;; *) grep -qE "(^|/)$(printf '%s' "$p" | sed 's/\./\\./g')\$" "$FILES" && continue ;; esac
+    printf 'agent-docs: %s:%s points at %s, which does not exist\n' "$f" "$ln" "$p"
+  done >> "$ERRS"
+done
+
+# --- live links to ROUTING.md -----------------------------------------------------------------
+# A markdown link to ROUTING.md sends a reader to a file that no longer exists. Prose that SAYS it
+# is retired is fine, and code that reads it fails its own tests, so only links are checked.
+# History under docs/ (ADRs, plans, archives) may link to it; docs/agents/ and docs/README.md may not.
+{ grep -vE '^docs/' "$FILES"; grep -E '^docs/(agents/|README\.md$)' "$FILES"; } \
+  | grep -vE '^scripts/check-agent-docs$|\.(lock|png|jpe?g|gif|webp|ico|pdf|ttf|zip|woff2?)$|lock\.json$' \
+  | while IFS= read -r f; do [ -f "$f" ] && [ ! -L "$f" ] && printf '%s\0' "$f"; done \
+  | xargs -0 grep -nIE '\]\([^)]*ROUTING\.md' /dev/null 2>/dev/null \
+  | grep -v 'agent-docs: allow' \
+  | awk -F: '{ print "agent-docs: " $1 ":" $2 " links to ROUTING.md, which is retired" }' >> "$ERRS"
+
+# --- secrets --------------------------------------------------------------------------------
+SECRET_RE='(sk-ant-[A-Za-z0-9_-]{20,}|sk-[A-Za-z0-9]{32,}|gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{30,}|AKIA[0-9A-Z]{16}|xox[baprs]-[A-Za-z0-9-]{10,}|-----BEGIN [A-Z ]*PRIVATE KEY-----|(mongodb(\+srv)?|postgres(ql)?|mysql|redis)://[^:/[:space:]]+:[^@[:space:]<>$]{6,}@)'
+for f in $(pick '(^|/)(AGENTS|CLAUDE|CONTEXT)\.md$|^docs/agents/'); do
+  [ -f "$f" ] && [ ! -L "$f" ] || continue
+  grep -nIE "$SECRET_RE" "$f" | cut -d: -f1 | while IFS= read -r ln; do
+    printf 'agent-docs: %s:%s contains a secret-shaped string\n' "$f" "$ln"
+  done >> "$ERRS"
+done
+
+if [ -s "$ERRS" ]; then
+  sort -u "$ERRS" >&2
+  exit 1
+fi
+printf 'agent-docs: ok (AGENTS.md %s bytes, CLAUDE.md %s lines)\n' "$(bytes AGENTS.md)" "$(wc -l < CLAUDE.md | tr -d ' ')"
+exit 0

@@ -1,63 +1,54 @@
 import { describe, expect, it } from "vitest";
 
-import type { WorkspaceState } from "../app/workspace";
-import type { Delivery } from "./deliveries";
+import type { Issue } from "./glitchtip";
 import { clipText, trayMenu } from "./tray-feed";
 
-const workspace = {
-  locale: "en",
-  applications: [{ id: "web", name: "Acme web" }],
-} as unknown as WorkspaceState;
-
-function delivery(patch: Partial<Delivery> = {}): Delivery {
+function issue(id: string, patch: Partial<Issue> = {}): Issue {
   return {
-    at: "2026-10-29T10:00:00.000Z",
-    applicationId: "web",
-    state: "error",
-    status: "delivered",
-    attempt: 1,
-    failure: null,
-    nextRetryAt: null,
+    id,
+    shortId: `WEB-${id}`,
+    title: `Error ${id}`,
+    culprit: "",
+    level: "error",
+    status: "unresolved",
+    count: 1,
+    userCount: 1,
+    firstSeen: "2026-10-29T09:00:00.000Z",
+    lastSeen: "2026-10-29T10:00:00.000Z",
+    project: { id: "1", slug: "web", name: "Acme web" },
     ...patch,
   };
 }
 
-const BEFORE = Date.parse("2026-10-29T09:00:00.000Z");
-const AFTER = Date.parse("2026-10-29T11:00:00.000Z");
-
 describe("menu bar item", () => {
-  it("lists delivered alerts newest first by application and state", () => {
+  it("lists open errors by when they were last seen, with level, project and time", () => {
     const menu = trayMenu(
-      [delivery({ state: "warning", at: "2026-10-29T10:05:00.000Z" }), delivery()],
-      workspace,
+      [
+        issue("1", { lastSeen: "2026-10-29T08:00:00.000Z", level: "warning" }),
+        issue("2", { lastSeen: "2026-10-29T10:00:00.000Z" }),
+      ],
+      0,
       "en",
-      AFTER,
     );
-    expect(menu.alerts.map((alert) => alert.text.split(" · ")[0])).toEqual(["🟡 Acme web", "🔴 Acme web"]);
-    expect(menu.alerts[0].text).toContain("Warning");
+    expect(menu.alerts.map((alert) => alert.text)).toEqual([
+      expect.stringMatching(/^🔴 Error 2 · Acme web · /),
+      expect.stringMatching(/^🟡 Error 1 · Acme web · /),
+    ]);
+    expect(menu.alerts[0].id).toBe("tray-alert-0");
   });
 
-  it("leaves out sends still being retried and agent prompts", () => {
-    const menu = trayMenu([delivery({ status: "retrying", failure: "temporary" }), delivery({ status: "prompt-sent" })], workspace, "en", BEFORE);
-    expect(menu.alerts).toEqual([]);
-    expect(menu.title).toBeNull();
+  it("shows the unread count beside the icon and in the tooltip", () => {
+    expect(trayMenu([issue("1")], 0, "en")).toMatchObject({ title: null, tooltip: "GlitchTip Companion" });
+    expect(trayMenu([issue("1")], 3, "en")).toMatchObject({ title: "3", tooltip: "GlitchTip Companion · 3 new" });
   });
 
-  it("counts alerts delivered since the window last had focus", () => {
-    expect(trayMenu([delivery(), delivery()], workspace, "en", BEFORE)).toMatchObject({
-      title: "2",
-      tooltip: "GlitchTip Companion · 2 new",
-    });
-    expect(trayMenu([delivery()], workspace, "en", AFTER)).toMatchObject({ title: null, tooltip: "GlitchTip Companion" });
-  });
-
-  it("shows at most five alerts", () => {
-    expect(trayMenu(Array.from({ length: 8 }, () => delivery()), workspace, "en", AFTER).alerts).toHaveLength(5);
+  it("shows at most five errors", () => {
+    expect(trayMenu(["1", "2", "3", "4", "5", "6", "7"].map((id) => issue(id)), 0, "en").alerts).toHaveLength(5);
   });
 
   it("labels the menu in the workspace's language", () => {
-    expect(trayMenu([], null, "ru", AFTER).labels).toEqual({
-      empty: "Оповещений пока нет",
+    expect(trayMenu([], 0, "ru").labels).toEqual({
+      empty: "Открытых ошибок нет",
       open: "Открыть GlitchTip Companion",
       quit: "Завершить GlitchTip Companion",
     });
@@ -66,7 +57,7 @@ describe("menu bar item", () => {
 
 describe("clipText", () => {
   it("keeps short text and cuts long text with an ellipsis", () => {
-    expect(clipText("abcde", 5)).toBe("abcde");
-    expect(clipText("abcdef", 5)).toBe("abcd…");
+    expect(clipText("short", 10)).toBe("short");
+    expect(clipText("abcdefghijkl", 5)).toBe("abcd…");
   });
 });

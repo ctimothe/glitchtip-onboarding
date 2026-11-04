@@ -3,6 +3,7 @@ import {
   Activity,
   AlertTriangle,
   KeyRound,
+  Inbox,
   LayoutDashboard,
   Plus,
   Server,
@@ -29,6 +30,9 @@ import {
   saveWorkspace,
   type WorkspaceState,
 } from "./app/workspace";
+import { useInbox } from "./app/inbox-state";
+import { issueKey } from "./lib/inbox";
+import { resumeTelegramSetup } from "./lib/setup-machine";
 import TrayManager from "./components/TrayManager";
 import { Button, EmptyState, Sheet, SidebarItem, SidebarSection, UiLocale } from "./components/ui";
 import { t, type Locale, type TranslationKey } from "./i18n";
@@ -37,6 +41,7 @@ import ApplicationsScreen from "./screens/ApplicationsScreen";
 import CredentialsScreen from "./screens/CredentialsScreen";
 import DeliveryActivityScreen from "./screens/DeliveryActivityScreen";
 import MigrationScreen from "./screens/MigrationScreen";
+import InboxScreen from "./screens/InboxScreen";
 import OverviewScreen from "./screens/OverviewScreen";
 import RelayServerScreen from "./screens/RelayServerScreen";
 import SettingsScreen from "./screens/SettingsScreen";
@@ -52,6 +57,7 @@ const SECTIONS: Array<{ heading: TranslationKey; items: Destination[] }> = [
   {
     heading: "nav.section.workspace",
     items: [
+      { kind: "inbox", label: "nav.inbox", icon: Inbox },
       { kind: "overview", label: "nav.overview", icon: LayoutDashboard },
       { kind: "applications", label: "nav.applications", icon: SquareStack },
     ],
@@ -72,7 +78,10 @@ const SECTIONS: Array<{ heading: TranslationKey; items: Destination[] }> = [
     ],
   },
 ];
+// Without a relay or a Telegram chat, the delivery screens and adding applications stay hidden.
+const SECTIONS_WITHOUT_TELEGRAM = SECTIONS.filter((section) => section.heading !== "nav.section.delivery");
 const DESTINATIONS = SECTIONS.flatMap((section) => section.items);
+const DESTINATIONS_WITHOUT_TELEGRAM = SECTIONS_WITHOUT_TELEGRAM.flatMap((section) => section.items);
 
 /** Route is derived from onboarding state until the user navigates. */
 export function initialRoute(workspace: WorkspaceState): AppRoute {
@@ -80,7 +89,7 @@ export function initialRoute(workspace: WorkspaceState): AppRoute {
     const stages = ["glitchtip", "server", "telegram", "application", "agent", "verify"] as const;
     return { kind: "setup", stage: stages[workspace.onboarding.currentStage - 1] };
   }
-  return { kind: "overview" };
+  return { kind: "inbox" };
 }
 
 // What the window shows before a workspace exists.
@@ -190,11 +199,15 @@ export default function App({ initialWorkspace }: { initialWorkspace?: Workspace
   }, [initialWorkspace]);
 
   const locale: Locale = workspace?.locale ?? preferredLocale();
+  const inbox = useInbox(workspace, locale);
   useEffect(() => {
     document.documentElement.lang = locale;
   }, [locale]);
 
   const onboarding = workspace !== null && workspace.onboarding.completedAt === null;
+  const telegramOn = workspace !== null && workspace.telegram !== null;
+  const sections = telegramOn ? SECTIONS : SECTIONS_WITHOUT_TELEGRAM;
+  const destinations = telegramOn ? DESTINATIONS : DESTINATIONS_WITHOUT_TELEGRAM;
 
   // ⌘1…⌘7 open the sidebar destinations, ⌘, opens Settings, ⌘N adds an application.
   useEffect(() => {
@@ -203,39 +216,39 @@ export default function App({ initialWorkspace }: { initialWorkspace?: Workspace
       if (!event.metaKey || event.altKey || event.ctrlKey || event.shiftKey) return;
       if (document.querySelector('[role="dialog"]')) return;
       const index = Number(event.key) - 1;
-      if (Number.isInteger(index) && index >= 0 && index < DESTINATIONS.length) {
+      if (Number.isInteger(index) && index >= 0 && index < destinations.length) {
         event.preventDefault();
-        setRoute({ kind: DESTINATIONS[index].kind } as AppRoute);
+        setRoute({ kind: destinations[index].kind } as AppRoute);
       } else if (event.key === ",") {
         event.preventDefault();
         setRoute({ kind: "settings" });
-      } else if (event.key.toLowerCase() === "n") {
+      } else if (event.key.toLowerCase() === "n" && telegramOn) {
         event.preventDefault();
         setRoute({ kind: "setup", stage: "application" });
       }
     }
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [boot.kind, onboarding]);
+  }, [boot.kind, onboarding, destinations, telegramOn]);
 
   // The menu bar, in the workspace's language. Settings sits in the app menu, so View lists the rest.
   const navigation = boot.kind === "ready" && !onboarding;
   useEffect(() => {
-    const destinations = DESTINATIONS.filter((item) => item.kind !== "settings").map((item) => ({
-      id: item.kind,
-      text: t(locale, item.label),
-    }));
-    void installAppMenu(locale, destinations, navigation).catch(() => undefined);
-  }, [locale, navigation]);
+    const items = destinations
+      .filter((item) => item.kind !== "settings")
+      .map((item) => ({ id: item.kind, text: t(locale, item.label) }));
+    void installAppMenu(locale, items, navigation).catch(() => undefined);
+  }, [locale, navigation, destinations]);
 
   useEffect(() => {
     if (!navigation) return;
     return onMenuCommand((command) => {
       if (document.querySelector('[role="dialog"]')) return;
-      if (command === "add-application") setRoute({ kind: "setup", stage: "application" });
-      else if (DESTINATIONS.some((item) => item.kind === command)) setRoute({ kind: command } as AppRoute);
+      if (command === "add-application") {
+        if (telegramOn) setRoute({ kind: "setup", stage: "application" });
+      } else if (destinations.some((item) => item.kind === command)) setRoute({ kind: command } as AppRoute);
     });
-  }, [navigation]);
+  }, [navigation, destinations, telegramOn]);
 
   // Resolves once the workspace is on disk.
   function commitWorkspace(next: WorkspaceState): Promise<void> {
@@ -267,7 +280,7 @@ export default function App({ initialWorkspace }: { initialWorkspace?: Workspace
   if (boot.kind === "migrate") {
     return provide(
       <>
-        <TrayManager workspace={workspace} locale={locale} />
+        <TrayManager inbox={inbox} locale={locale} />
         <MigrationScreen
           locale={locale}
           workspaceId={LEGACY_WORKSPACE_ID}
@@ -315,7 +328,8 @@ export default function App({ initialWorkspace }: { initialWorkspace?: Workspace
 
   if (boot.kind === "loading" || workspace === null || route === null) {
     return provide(
-      <main className="ui-main" data-tauri-drag-region aria-busy="true">
+      <main className="ui-main ui-launch" data-tauri-drag-region aria-busy="true">
+        <span aria-hidden="true" className="ui-spinner" />
         <span className="sr-only">{t(locale, "app.loading")}</span>
       </main>
     );
@@ -328,21 +342,21 @@ export default function App({ initialWorkspace }: { initialWorkspace?: Workspace
     const step = event.key === "ArrowDown" ? 1 : event.key === "ArrowUp" ? -1 : 0;
     if (step === 0) return;
     event.preventDefault();
-    const count = DESTINATIONS.length;
+    const count = destinations.length;
     itemRefs.current[(index + step + count) % count]?.focus();
   }
 
   if (route.kind === "setup" && onboarding) {
     return provide(
       <>
-        <TrayManager workspace={workspace} locale={locale} />
+        <TrayManager inbox={inbox} locale={locale} />
         <SetupAssistant
           workspace={workspace}
           mode="onboarding"
           suggestedProject={legacyProject}
           onWorkspaceChange={async (next) => {
             await commitWorkspace(next);
-            if (next.onboarding.completedAt !== null) setRoute({ kind: "overview" });
+            if (next.onboarding.completedAt !== null) setRoute({ kind: "inbox" });
           }}
         />
       </>
@@ -351,13 +365,13 @@ export default function App({ initialWorkspace }: { initialWorkspace?: Workspace
 
   return provide(
     <div className="ui-window">
-      <TrayManager workspace={workspace} locale={locale} />
+      <TrayManager inbox={inbox} locale={locale} />
       <nav aria-label={t(l, "nav.label")} className="ui-sidebar">
         <div className="ui-titlebar-spacer" data-tauri-drag-region />
-        {SECTIONS.map((section) => (
+        {sections.map((section) => (
           <SidebarSection key={section.heading} heading={t(l, section.heading)}>
             {section.items.map((item) => {
-              const index = DESTINATIONS.indexOf(item);
+              const index = destinations.indexOf(item);
               return (
                 <SidebarItem
                   key={item.kind}
@@ -375,17 +389,19 @@ export default function App({ initialWorkspace }: { initialWorkspace?: Workspace
             })}
           </SidebarSection>
         ))}
-        <div className="ui-sidebar__footer">
-          <SidebarSection>
-            <SidebarItem
-              label={t(l, "nav.addApplication")}
-              icon={Plus}
-              muted={!adding}
-              current={adding}
-              onClick={() => setRoute({ kind: "setup", stage: "application" })}
-            />
-          </SidebarSection>
-        </div>
+        {telegramOn ? (
+          <div className="ui-sidebar__footer">
+            <SidebarSection>
+              <SidebarItem
+                label={t(l, "nav.addApplication")}
+                icon={Plus}
+                muted={!adding}
+                current={adding}
+                onClick={() => setRoute({ kind: "setup", stage: "application" })}
+              />
+            </SidebarSection>
+          </div>
+        ) : null}
       </nav>
       <main className="ui-main">
         {route.kind === "setup" && (
@@ -401,17 +417,27 @@ export default function App({ initialWorkspace }: { initialWorkspace?: Workspace
             onFinish={() => setRoute({ kind: "applications" })}
           />
         )}
+        {route.kind === "inbox" && (
+          <InboxScreen
+            workspace={workspace}
+            inbox={inbox}
+            focusKey={inbox.lastAlert ? issueKey(inbox.lastAlert.sourceId, inbox.lastAlert.issue.id) : null}
+          />
+        )}
         {route.kind === "overview" && (
           <OverviewScreen
             workspace={workspace}
             legacy={legacy}
             onNavigate={(kind) => setRoute({ kind } as AppRoute)}
-            onAddApplication={() => setRoute({ kind: "setup", stage: "application" })}
+            onAddApplication={telegramOn ? () => setRoute({ kind: "setup", stage: "application" }) : undefined}
             onTurnOffLegacy={turnOffLegacy}
           />
         )}
         {route.kind === "applications" && (
-          <ApplicationsScreen workspace={workspace} onAdd={() => setRoute({ kind: "setup", stage: "application" })} />
+          <ApplicationsScreen
+            workspace={workspace}
+            onAdd={telegramOn ? () => setRoute({ kind: "setup", stage: "application" }) : undefined}
+          />
         )}
         {route.kind === "telegram" && <TelegramWorkspaceScreen workspace={workspace} />}
         {route.kind === "relay" && <RelayServerScreen workspace={workspace} onWorkspaceUpdate={updateWorkspace} />}
@@ -425,6 +451,12 @@ export default function App({ initialWorkspace }: { initialWorkspace?: Workspace
             onWorkspaceChange={changeWorkspace}
             appearance={appearance}
             onAppearanceChange={changeAppearance}
+            onSetUpTelegram={() => {
+              void commitWorkspace(resumeTelegramSetup(workspace)).then(
+                () => setRoute({ kind: "setup", stage: "server" }),
+                () => undefined,
+              );
+            }}
           />
         )}
       </main>

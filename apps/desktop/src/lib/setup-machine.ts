@@ -274,3 +274,32 @@ export async function runStage(
     }
   }
 }
+
+/** Whether setup can end here and open the inbox: GlitchTip is connected and no application exists yet. */
+export function canFinishWithoutTelegram(workspace: WorkspaceState): boolean {
+  const stage = workspace.onboarding.currentStage;
+  return (
+    workspace.onboarding.completedAt === null &&
+    stage >= 2 &&
+    stage <= 4 &&
+    workspace.applications.length === 0
+  );
+}
+
+/**
+ * Telegram alerts are optional: setup can end at any stage before the first application, keeping
+ * whatever of the relay and the pairing is already done.
+ */
+export function finishWithoutTelegram(workspace: WorkspaceState, now: () => string): WorkspaceState {
+  if (!canFinishWithoutTelegram(workspace)) throw new SetupError("stage-blocked");
+  return { ...workspace, onboarding: { ...workspace.onboarding, completedAt: now() } };
+}
+
+/** Re-enter setup where it was left, for a workspace that finished without an application. */
+export function resumeTelegramSetup(workspace: WorkspaceState): WorkspaceState {
+  if (workspace.onboarding.completedAt === null || workspace.applications.length > 0) {
+    throw new SetupError("stage-blocked");
+  }
+  const stage = workspace.relay === null ? 2 : workspace.telegram === null ? 3 : 4;
+  return { ...workspace, onboarding: { completedAt: null, currentStage: stage } };
+}
