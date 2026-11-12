@@ -22,3 +22,17 @@ export function StatusBadge({ status, label }: { status: Status; label: string }
     </span>
   );
 }
+
+export type TagTone = "error" | "warning" | "neutral";
+
+/** A one-word classification in a tinted capsule, with an optional plain-text explanation beside it. */
+export function Tag({ tone, label, detail }: { tone: TagTone; label: string; detail?: string }) {
+  return (
+    <p className="ui-tag-line">
+      <span className="ui-tag" data-tone={tone}>
+        {label}
+      </span>
+      {detail ? <span className="ui-tag-line__detail">{detail}</span> : null}
+    </p>
+  );
+}

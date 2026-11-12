@@ -193,6 +193,22 @@ function isStage(value: unknown): value is WorkspaceState["onboarding"]["current
   return typeof value === "number" && Number.isInteger(value) && value >= 1 && value <= 6;
 }
 
+/**
+ * Whether a server address may be sent the API token: HTTPS anywhere, plain HTTP only on this
+ * Mac itself (a GlitchTip in local Docker, or one reached through an SSH tunnel), where the
+ * request never crosses a network.
+ */
+export function acceptsToken(baseUrl: string): boolean {
+  try {
+    const url = new URL(baseUrl);
+    if (url.protocol === "https:") return true;
+    // The two names the window's CSP and the opener's scope allow (tauri.conf.json, capabilities).
+    return url.protocol === "http:" && ["localhost", "127.0.0.1"].includes(url.hostname);
+  } catch {
+    return false;
+  }
+}
+
 function isAbsoluteHttpUrl(value: unknown): value is string {
   if (typeof value !== "string" || value === "") return false;
   try {
@@ -326,8 +342,8 @@ function migrateSources(
     } else errors.push("sources.id");
     if (isNonEmptyString(raw.name)) source.name = raw.name;
     else errors.push("sources.name");
-    // HTTPS only: the token goes with every request.
-    if (isAbsoluteHttpUrl(raw.baseUrl) && raw.baseUrl.startsWith("https://")) source.baseUrl = raw.baseUrl;
+    // The token goes with every request: HTTPS, or this Mac itself.
+    if (isAbsoluteHttpUrl(raw.baseUrl) && acceptsToken(raw.baseUrl)) source.baseUrl = raw.baseUrl;
     else errors.push("sources.baseUrl");
     if (isNonEmptyString(raw.organizationSlug)) source.organizationSlug = raw.organizationSlug;
     else errors.push("sources.organizationSlug");

@@ -1,8 +1,8 @@
 import { disable, enable, isEnabled } from "@tauri-apps/plugin-autostart";
 import { useEffect, useState } from "react";
 
-import type { Appearance } from "../app/preferences";
-import { sourceTokenKey, type GlitchTipSource, type WorkspaceState } from "../app/workspace";
+import type { Appearance, NotifyLevel } from "../app/preferences";
+import { acceptsToken, sourceTokenKey, type GlitchTipSource, type WorkspaceState } from "../app/workspace";
 import {
   Button,
   CodeBlock,
@@ -41,12 +41,16 @@ export default function SettingsScreen({
   onWorkspaceChange,
   appearance = "system",
   onAppearanceChange,
+  notify = "important",
+  onNotifyChange,
   onSetUpTelegram,
 }: {
   workspace: WorkspaceState;
   onWorkspaceChange: (next: WorkspaceState) => void;
   appearance?: Appearance;
   onAppearanceChange?: (next: Appearance) => void;
+  notify?: NotifyLevel;
+  onNotifyChange?: (next: NotifyLevel) => void;
   /** Shown while no relay or Telegram chat exists: re-enters setup at the relay stage. */
   onSetUpTelegram?: () => void;
 }) {
@@ -77,7 +81,7 @@ export default function SettingsScreen({
       setAddError(t(l, "settings.serverExists"));
       return;
     }
-    if (!baseUrl.startsWith("https://")) {
+    if (!acceptsToken(baseUrl)) {
       setAddError(t(l, "settings.httpsOnly"));
       return;
     }
@@ -143,6 +147,16 @@ export default function SettingsScreen({
             { value: "light", label: t(l, "settings.appearanceLight") },
             { value: "dark", label: t(l, "settings.appearanceDark") },
             { value: "system", label: t(l, "settings.appearanceSystem") },
+          ]}
+        />
+        <SelectField
+          label={t(l, "settings.notify")}
+          value={notify}
+          onChange={(value) => onNotifyChange?.(value as NotifyLevel)}
+          options={[
+            { value: "important", label: t(l, "settings.notify.important") },
+            { value: "all", label: t(l, "settings.notify.all") },
+            { value: "off", label: t(l, "settings.notify.off") },
           ]}
         />
         {atLogin !== null ? (

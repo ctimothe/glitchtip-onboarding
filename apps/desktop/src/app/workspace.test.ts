@@ -18,6 +18,7 @@ vi.mock("@tauri-apps/plugin-store", () => ({
 }));
 
 import {
+  acceptsToken,
   createWorkspace,
   draftWorkspace,
   inboxSources,
@@ -675,6 +676,24 @@ describe("GlitchTip sources", () => {
     expect(() => migrateWorkspace(minimalRaw({ sources: [{ ...LEX, baseUrl: "http://errors.example.org" }] }))).toThrow(
       "sources.baseUrl",
     );
+  });
+
+  it("accepts plain HTTP only for a server on this Mac itself", () => {
+    const local = { ...LEX, baseUrl: "http://localhost:8377" };
+    expect(migrateWorkspace(minimalRaw({ sources: [local] })).sources).toEqual([local]);
+    expect(acceptsToken("https://errors.example.org")).toBe(true);
+    expect(acceptsToken("http://127.0.0.1:8000")).toBe(true);
+    expect(acceptsToken("http://LOCALHOST:8000")).toBe(true);
+    // Loopback by another name: the window's CSP does not list it, so it is refused here too.
+    expect(acceptsToken("http://[::1]:8000")).toBe(false);
+    expect(acceptsToken("http://localhost@evil.example")).toBe(false);
+    // Names and addresses that only look local.
+    expect(acceptsToken("http://localhost.example.org")).toBe(false);
+    expect(acceptsToken("http://127.0.0.1.example.org")).toBe(false);
+    expect(acceptsToken("http://192.168.1.20:8000")).toBe(false);
+    expect(acceptsToken("http://user@localhost.evil.example")).toBe(false);
+    expect(acceptsToken("ftp://localhost")).toBe(false);
+    expect(acceptsToken("localhost:8000")).toBe(false);
   });
 
   it("rejects a non-array, a reserved id, a repeated id and a repeat of the primary server", () => {

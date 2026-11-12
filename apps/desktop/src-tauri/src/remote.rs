@@ -667,7 +667,7 @@ pub async fn deployment_preview(app: tauri::AppHandle, request: DeployRequest) -
 pub async fn deploy_relay(app: tauri::AppHandle, request: DeployRequest) -> Result<DeploymentResult, String> {
     let dir = bundle_dir(&app);
     blocking(move || {
-        let store = crate::keychain::MacKeychain::new(crate::keychain::SERVICE);
+        let store = crate::keychain::MacKeychain::new(crate::keychain::service());
         let env = crate::keychain::get_secret(&store, &request.workspace_id, ENV_KEY)
             .map_err(|e| e.code().to_string())?
             .ok_or_else(|| "relay-env-missing".to_string())?;

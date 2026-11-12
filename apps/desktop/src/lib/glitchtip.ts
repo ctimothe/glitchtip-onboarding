@@ -267,13 +267,18 @@ export type Issue = {
   userCount: number;
   firstSeen: string;
   lastSeen: string;
-  project: { id: string; slug: string; name: string };
+  /** The exception's type and message, apart; both empty for an issue that is a plain message. */
+  errorType: string;
+  errorValue: string;
+  project: { id: string; slug: string; name: string; platform: string };
 };
 
 export type IssuePage = { issues: Issue[]; nextCursor: string | null };
 
 export type StackFrame = {
   filename: string;
+  /** The file's full address, where the SDK sent one: a browser frame's URL, extensions included. */
+  absPath: string;
   function: string;
   lineNo: number | null;
   colNo: number | null;
@@ -288,6 +293,35 @@ export type IssueEvent = {
   tags: Array<{ key: string; value: string }>;
   /** Each exception's frames run innermost first, the order people read them in. */
   exceptions: Array<{ type: string; value: string; frames: StackFrame[] }>;
+  /** False for a crash nothing caught, true for an error the code caught and reported; null when the SDK did not say. */
+  handled: boolean | null;
+  /** The request the event happened in: the page for a browser, the caller for a server. */
+  request: { url: string; userAgent: string } | null;
+};
+
+export type IssueTag = {
+  key: string;
+  /** How many different values the issue's events carry for this tag. */
+  unique: number;
+  /** The most frequent values, with the number of events carrying each. */
+  values: Array<{ value: string; count: number }>;
+};
+
+/**
+ * What an issue's events say about how real it is, for `readSignals` in ./triage. The
+ * environments, browsers and people are counted over every event; the rest is the latest event's.
+ */
+export type IssueEvidence = {
+  /** Events per environment. The entry named `""` counts the events that name none. */
+  environments: Array<{ name: string; count: number }>;
+  browsers: Array<{ name: string; count: number }>;
+  /** Distinct `user.id` values. GlitchTip 6.2.0 reports `userCount` 0 on every issue, so this is counted from the tag. */
+  users: number;
+  handled: boolean | null;
+  userAgent: string;
+  url: string;
+  /** The outermost exception's frames, innermost first. */
+  frames: Array<{ file: string; inApp: boolean }>;
 };
 
 const ISSUE_STATUSES: readonly IssueStatus[] = ["unresolved", "resolved", "ignored"];
@@ -307,6 +341,7 @@ function toIssue(raw: unknown): Issue | null {
   if (typeof r !== "object" || r === null) return null;
   if (typeof r.id !== "string" || typeof r.title !== "string") return null;
   const project = (r.project ?? {}) as Record<string, unknown>;
+  const metadata = (typeof r.metadata === "object" && r.metadata !== null ? r.metadata : {}) as Record<string, unknown>;
   const status = ISSUE_STATUSES.find((s) => s === r.status) ?? "unresolved";
   return {
     id: r.id,
@@ -319,7 +354,14 @@ function toIssue(raw: unknown): Issue | null {
     userCount: whole(r.userCount) ?? 0,
     firstSeen: text(r.firstSeen),
     lastSeen: text(r.lastSeen),
-    project: { id: String(project.id ?? ""), slug: text(project.slug), name: text(project.name) },
+    errorType: text(metadata.type),
+    errorValue: text(metadata.value),
+    project: {
+      id: String(project.id ?? ""),
+      slug: text(project.slug),
+      name: text(project.name),
+      platform: text(project.platform),
+    },
   };
 }
 
@@ -361,6 +403,7 @@ function toFrame(raw: unknown): StackFrame | null {
   if (typeof f !== "object" || f === null) return null;
   return {
     filename: text(f.filename),
+    absPath: text(f.absPath),
     function: text(f.function),
     lineNo: whole(f.lineNo),
     colNo: whole(f.colNo),
@@ -388,6 +431,9 @@ export async function latestEvent(
   const entries = Array.isArray(r.entries) ? (r.entries as Record<string, unknown>[]) : [];
   const exceptionEntry = entries.find((e) => e?.type === "exception");
   const values = ((exceptionEntry?.data as { values?: unknown } | undefined)?.values ?? []) as unknown[];
+  const mechanisms = (Array.isArray(values) ? values : []).map(
+    (raw) => ((raw ?? {}) as { mechanism?: { handled?: unknown } | null }).mechanism?.handled,
+  );
   const exceptions = (Array.isArray(values) ? values : []).map((raw) => {
     const v = (raw ?? {}) as Record<string, unknown>;
     const frames = ((v.stacktrace as { frames?: unknown } | undefined)?.frames ?? []) as unknown[];
@@ -413,6 +459,81 @@ export async function latestEvent(
     release,
     tags,
     exceptions,
+    // One uncaught exception in the chain makes the event a crash.
+    handled: mechanisms.includes(false) ? false : mechanisms.includes(true) ? true : null,
+    request: toRequest(entries.find((e) => e?.type === "request")?.data),
+  };
+}
+
+/** GlitchTip sends the headers as `[name, value]` pairs. */
+function toRequest(raw: unknown): IssueEvent["request"] {
+  const r = raw as Record<string, unknown> | null | undefined;
+  if (typeof r !== "object" || r === null) return null;
+  const headers = Array.isArray(r.headers) ? (r.headers as unknown[]) : [];
+  const agent = headers.find(
+    (pair): pair is [string, string] =>
+      Array.isArray(pair) && typeof pair[0] === "string" && typeof pair[1] === "string" && pair[0].toLowerCase() === "user-agent",
+  );
+  return { url: text(r.url), userAgent: agent?.[1] ?? "" };
+}
+
+/** Every tag of the issue's events with its most frequent values. A server without the endpoint has none. GET only. */
+export async function issueTags(
+  baseUrl: string,
+  token: string,
+  issueId: string,
+  fetchFn: typeof fetch = fetch,
+): Promise<IssueTag[]> {
+  const path = `/api/0/issues/${encodeURIComponent(issueId)}/tags/`;
+  const res = await getJson(`${normalizeBase(baseUrl)}${path}`, token, fetchFn);
+  if (res.status === 404) return [];
+  if (res.status < 200 || res.status >= 300) throw new Error(`GET ${path} -> HTTP ${res.status}`);
+  return (Array.isArray(res.body) ? (res.body as Record<string, unknown>[]) : [])
+    .filter((tag) => typeof tag?.key === "string")
+    .map((tag) => ({
+      key: tag.key as string,
+      unique: whole(tag.uniqueValues) ?? 0,
+      values: (Array.isArray(tag.topValues) ? (tag.topValues as Record<string, unknown>[]) : [])
+        .filter((top) => typeof top?.value === "string")
+        .map((top) => ({ value: top.value as string, count: whole(top.count) ?? 0 })),
+    }));
+}
+
+/**
+ * The issue's latest event and tag counts, reduced to what triage reads. Two GETs. `issue.count`
+ * is the issue's events as the list reported them: whatever the environment tag does not account
+ * for is reported as events that name no environment, so a few labelled events never speak for
+ * the unlabelled rest.
+ */
+export async function issueEvidence(
+  baseUrl: string,
+  token: string,
+  issue: Pick<Issue, "id" | "count">,
+  fetchFn: typeof fetch = fetch,
+): Promise<IssueEvidence> {
+  const [event, tags] = await Promise.all([
+    latestEvent(baseUrl, token, issue.id, fetchFn),
+    issueTags(baseUrl, token, issue.id, fetchFn),
+  ]);
+  const counted = (key: string) =>
+    (tags.find((tag) => tag.key === key)?.values ?? []).map(({ value, count }) => ({ name: value, count }));
+  const environments = counted("environment").filter((entry) => entry.name !== "");
+  const latest = event.tags.find((tag) => tag.key === "environment")?.value;
+  if (latest && !environments.some((entry) => entry.name === latest)) environments.push({ name: latest, count: 1 });
+  const named = environments.reduce((sum, entry) => sum + entry.count, 0);
+  const unnamed = Math.max(issue.count - named, latest ? 0 : 1);
+  if (unnamed > 0) environments.push({ name: "", count: unnamed });
+  return {
+    environments,
+    browsers: counted("browser.name"),
+    users: tags.find((tag) => tag.key === "user.id")?.unique ?? 0,
+    handled: event.handled,
+    userAgent: event.request?.userAgent ?? "",
+    url: event.request?.url ?? "",
+    frames: (event.exceptions.at(-1)?.frames ?? []).map((frame) => ({
+      file: frame.absPath || frame.filename,
+      inApp: frame.inApp,
+    })),
   };
 }
 

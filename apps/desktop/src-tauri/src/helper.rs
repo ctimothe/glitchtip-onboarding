@@ -26,7 +26,7 @@ use std::process::{Command, Stdio};
 use serde_json::{json, Map, Value};
 
 use crate::agent_install::{contains_secret, CONFIG_FILE};
-use crate::keychain::{get_secret, MacKeychain, SecretError, SERVICE};
+use crate::keychain::{get_secret, service, MacKeychain, SecretError};
 
 /// The first argument that makes the app answer as the helper instead of opening its window.
 pub const LAUNCH_FLAG: &str = "--companion-helper";
@@ -769,7 +769,7 @@ impl HelperEnv for SystemEnv {
     }
 
     fn token(&self, workspace_id: &str) -> Result<Option<String>, SecretError> {
-        get_secret(&MacKeychain::new(SERVICE), workspace_id, TOKEN_KEY)
+        get_secret(&MacKeychain::new(service()), workspace_id, TOKEN_KEY)
     }
 
     fn get(&self, url: &str, token: &str) -> Option<(u16, String)> {

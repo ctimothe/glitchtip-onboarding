@@ -5,6 +5,9 @@
 //
 //   npm run dev:frontend  →  http://localhost:1420/preview.html?scenario=ready
 //
+// `&live=8377` reads the GlitchTip that test/live-glitchtip/run.sh --keep leaves on that port
+// instead of the made-up errors below: real issues, real triage, no Telegram.
+//
 // Scenarios: `ready` (finished setup with two applications; add `&relay=outdated` for a relay
 // still on settings from before a change; `&v1=web` or `&v1=unknown` for a v1 relay still on this
 // Mac after the move, with or without its project), `setup` (first run, setup assistant), `server`
@@ -89,8 +92,18 @@ const workspace: WorkspaceState = {
   onboarding: { completedAt: ago(60 * 24 * 3), currentStage: 6 },
 };
 
+const livePort = scenario === "ready" ? params.get("live") : null;
+// The local GlitchTip's own development organization and token (test/live-glitchtip/compose.yaml).
+const live: WorkspaceState = {
+  ...workspace,
+  glitchtip: { baseUrl: `http://localhost:${livePort}`, organizationSlug: "org", verifiedAt: ago(60) },
+  relay: null,
+  telegram: null,
+  applications: [],
+};
+
 const stored: Record<string, WorkspaceState> = {
-  ready: workspace,
+  ready: livePort ? live : workspace,
   server: { ...workspace, relay: null, telegram: null, applications: [], onboarding: { completedAt: null, currentStage: 2 } },
 };
 
@@ -99,7 +112,7 @@ const tokens = { botToken: "7000000001:preview-token", glitchtipToken: "preview-
 const deployed = params.get("relay") === "outdated" ? { ...workspace, locale: locale === "en" ? "ru" : "en" } : workspace;
 const keychain: Record<string, Record<string, string>> = {
   ready: {
-    "glitchtip-token": tokens.glitchtipToken,
+    "glitchtip-token": livePort ? "d".repeat(64) : tokens.glitchtipToken,
     "telegram-bot-token": tokens.botToken,
     "relay.env": buildRelayEnv({ workspace: deployed as WorkspaceState, ...tokens }),
     ...(v1 !== null && v1 !== "unknown" ? { "glitchtip.project": v1 } : {}),

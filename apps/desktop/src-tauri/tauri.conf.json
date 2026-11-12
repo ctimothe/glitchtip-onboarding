@@ -26,7 +26,7 @@
         "windowEffects": { "effects": ["sidebar"], "state": "followsWindowActiveState" }
       }
     ],
-    "security": { "csp": "default-src 'self'; connect-src 'self' https: ipc: http://ipc.localhost" }
+    "security": { "csp": "default-src 'self'; connect-src 'self' https: http://localhost:* http://127.0.0.1:* ipc: http://ipc.localhost" }
   },
   "bundle": {
     "active": true,

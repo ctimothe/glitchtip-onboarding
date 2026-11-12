@@ -2,8 +2,9 @@
 
 A free, MIT-open, direct-downloaded macOS app for the errors your GlitchTip
 servers collect. Its inbox reads every connected server's open errors once a
-minute, notifies you of new and returning ones, and lets you resolve or ignore
-them. Telegram alerts are optional: the app can deploy a small relay next to
+minute, works out which of them are real problems (an outage, a bug in
+production) and which are noise, notifies you of the real ones, and lets you
+resolve or ignore them. Telegram alerts are optional: the app can deploy a small relay next to
 GlitchTip, pair a Telegram forum group and give each application its own
 topic. It also installs agent files so Codex or Claude Code can read an
 incident.
@@ -15,12 +16,49 @@ those on the user's Mac, in the Keychain, with no hosted service in between.
 ## What it does
 
 - **Inbox**: open errors from every GlitchTip server you add (Settings → GlitchTip
-  servers), most recently seen first, with the latest event's stack trace,
-  Resolve, Ignore and Open in GlitchTip. It reads
+  servers), with the latest event's stack trace, Resolve, Ignore and Open in
+  GlitchTip. It opens on **Needs attention**, the most serious first; **All** shows
+  every open error, most recently seen first. It reads
   `GET /api/0/organizations/{org}/issues/?query=is:unresolved` once a minute, on
   focus and when the network returns, while the app runs; closing the window keeps
-  it in the menu bar. A Mac notification names each project with new errors or
-  errors back after being resolved; the first read of a server notifies nothing.
+  it in the menu bar.
+- **Triage** (`src/lib/triage.ts`): GlitchTip's level says how loud the code was,
+  not whether anyone is hurt, so every open error is read from its evidence
+  instead: the environments its events come from, whether it was a crash or a
+  caught error, who or what triggered it, whose code it is in, and how fast it
+  arrives. The first rule that fits decides:
+
+  | Kind | What it is | Notifies |
+  |---|---|---|
+  | Not production | every event names an environment, and each is `development`, `staging`, `preview-…`, `test`, … | no |
+  | Outage | a fatal event, a dependency that refuses or cannot be reached, memory, disk or connections used up | yes, as critical |
+  | Noise | browser quirks (`ResizeObserver loop`, `Script error.`), an error thrown inside a browser extension, a vulnerability scanner's request to a server, crawlers | no |
+  | Expected | a refusal (the app's own 4xx exceptions) or a warning the code caught and reported, cancelled requests | no |
+  | Flaky | a browser's own "request never arrived" messages, broken connections and third-party timeouts, a browser still on an old build | only once it spreads (30 events a minute) |
+  | Bug | everything else in production | yes; critical when a crash reaches 10 people or it spreads |
+
+  Every quiet verdict is a claim that nobody needs to look, so each is kept
+  narrow: a pattern matches a whole message or a code that does not occur in
+  prose, a refusal or a warning is quiet only when the code caught it, and a
+  verdict that rests on the latest event alone (scanner, crawler, extension)
+  gives way once ten people are on the error. An event with no environment, and
+  an error GlitchTip has not been asked about yet, count as production: a
+  missing answer never hides an error. The evidence comes
+  from two GET calls per error (`/issues/{id}/events/latest/` and
+  `/issues/{id}/tags/`), at most 24 errors per server per minute, asked again when
+  an error's events double or after fifteen minutes of new events. Between polls
+  the app keeps ids, counts and yes/no answers only, never event text.
+- **Notifications**: by default for outages and bugs alone (Settings →
+  Notifications also offers every new error, or none): a new one, one back after
+  being resolved, and a known one that got worse (a quiet hiccup that starts
+  spreading, a bug that reaches many people). The first read of a server notifies
+  nothing. A signed build posts them through the system's notification centre
+  (`src-tauri/src/notifications.rs`): one about a single error has Resolve and
+  Ignore buttons, a project's notifications stack together, and a click opens
+  that error. A button that fails brings the window forward on the error with
+  the reason; one on a notification from a server since replaced does nothing.
+  An unsigned build is refused by macOS there and falls back to the
+  notification plugin, without the buttons.
 - **Setup assistant** (first run): connect GlitchTip, then either continue
   without Telegram straight to the inbox, or go on through five more stages:
   deploy the relay over SSH → pair Telegram → add the first application →
@@ -38,9 +76,15 @@ those on the user's Mac, in the Keychain, with no hosted service in between.
   sidebar, sheets for every confirmation, and a translated menu bar: Settings… (⌘,) in the
   app menu, Add Application… (⌘N) under File, and the sidebar's destinations (⌘1–⌘6) under View.
 - English, Russian and Uzbek, following the Mac's language on first run.
-- Menu bar item with the five most recently seen open errors and the number
-  notified since the window last had focus. Quit stops the inbox; the relay,
-  when deployed, keeps delivering to Telegram on its own.
+- Menu bar item with the five most serious errors that need attention, each
+  behind the system's red or amber status dot (a click opens it), and the number
+  notified since the window last had focus, which the Dock icon shows too. Quit
+  stops the inbox; the relay, when deployed, keeps delivering to Telegram on its
+  own.
+- The minute's beat comes from the Rust side (`src-tauri/src/heartbeat.rs`), and
+  the app opts out of App Nap: macOS slows the timers of a window that is hidden
+  or behind others, and with the timer in the page a check due every minute came
+  two minutes apart and later.
 
 ## Companion scope
 
@@ -80,6 +124,18 @@ Useful scripts (workdir `apps/desktop`):
 | `npm run build`      | Release Tauri build (needs signing setup) |
 | `npm run build:debug`| **Unsigned** debug `.app` for local use   |
 | `npm run fetch:node` | Puts the bundled Node.js (pinned version and checksum) in `src-tauri/binaries/`; every build needs it |
+
+`bash test/live-glitchtip/run.sh` (repo root, needs Docker, about a minute) starts a real GlitchTip
+6.2.0 on loopback, sends it a corpus of ordinary production errors (`test/live-glitchtip/corpus.mjs`:
+a storefront, its API and a billing worker on a bad day) and runs the app's own poller, client and
+triage against it: every scenario must be read the way the corpus says, and a new outage, an error
+that returns after Resolve and a hiccup that starts spreading must each alert. Run it after changing
+`src/lib/triage.ts`, `src/lib/inbox.ts` or the issue calls in `src/lib/glitchtip.ts`. With `--keep`
+the server stays on `127.0.0.1:8377` for the two ways to look at it: the browser preview
+(`/preview.html?scenario=ready&live=8377`), and `bash test/live-glitchtip/app.sh`, which builds a
+development copy of the app ("GlitchTip Companion Live") already connected to that server. The copy
+has its own bundle identifier, data folder and Keychain service, so it cannot read or change the
+app you really use.
 
 `bash test/companion-ssh-e2e/run.sh` (repo root, needs Docker, about three minutes) deploys the relay
 with the app's own Rust deploy code over real SSH to a throwaway stand-in server with its own Docker
@@ -130,7 +186,9 @@ debug signing in this repo — do not add any to work around Gatekeeper.
 
 Secrets live in the macOS login Keychain as generic passwords under the
 service `dev.ctimothe.glitchtip-companion`, one item per
-`<workspace ID>/<key>` account. Rust owns every Keychain call
+`<workspace ID>/<key>` account. A build under any other bundle identifier
+(a development copy) uses its own service, the same name followed by its
+identifier (`service_for`), and so never sees the released app's items. Rust owns every Keychain call
 (`src-tauri/src/keychain.rs`: `secret_set`, `secret_get`, `secret_remove`,
 `secret_presence`, `secret_migrate_file_vault`, `secret_remove_file_vault`);
 the renderer only calls them through `src/lib/keychain.ts` and the
@@ -183,11 +241,16 @@ leaves v1 untouched.
 
 ## Troubleshooting
 
-- **Self-signed / localhost instances fail TLS.** GlitchTip and Telegram
-  calls run over the webview's `fetch` with normal TLS verification; there is
-  no insecure-skip. Use a properly certified `https://` instance URL.
-- **Only `https:` hosts are reachable from the window.** The CSP is
-  `connect-src 'self' https: ipc: http://ipc.localhost`. Both GlitchTip and
+- **Self-signed instances fail TLS.** GlitchTip and Telegram calls run over
+  the webview's `fetch` with normal TLS verification; there is no
+  insecure-skip. Use a properly certified `https://` instance URL.
+- **Only `https:` hosts are reachable from the window, and this Mac itself.**
+  The CSP is `connect-src 'self' https: http://localhost:* http://127.0.0.1:*
+  ipc: http://ipc.localhost`, and a server address must be HTTPS unless it is
+  `http://localhost` or `http://127.0.0.1` (`acceptsToken` in
+  `src/app/workspace.ts`): a GlitchTip in local Docker or behind an SSH tunnel,
+  where the token never crosses a network. The agent helper still reads HTTPS
+  servers only. Both GlitchTip and
   `https://api.telegram.org` answer cross-origin requests from the app
   (`Access-Control-Allow-Origin: *`, checked 2026-10-28). SSH and relay
   commands run in Rust, not in the window.
@@ -196,3 +259,11 @@ leaves v1 untouched.
   group as an administrator.
 - **Copy does nothing.** Clipboard access needs a focused window — click the
   window and retry.
+- **No notification appears from a local build.** macOS answers an unsigned
+  app's request to notify with "Notifications are not allowed for this
+  application" and asks the user nothing (macOS 27.2, 2026-11-12). The inbox,
+  the menu bar item and the Dock badge still show the error; the notification
+  centre needs the signed release.
+- **An error is filed under the wrong kind.** The rules are the tables in
+  `src/lib/triage.ts`, each with a test in `triage.test.ts`; add the pattern and
+  a scenario to `test/live-glitchtip/corpus.mjs`.

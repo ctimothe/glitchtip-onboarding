@@ -20,7 +20,15 @@ import {
   type LegacyPending,
 } from "./app/migration";
 import { installAppMenu, onMenuCommand } from "./app/menu";
-import { applyAppearance, loadAppearance, saveAppearance, type Appearance } from "./app/preferences";
+import {
+  applyAppearance,
+  loadAppearance,
+  loadNotifyLevel,
+  saveAppearance,
+  saveNotifyLevel,
+  type Appearance,
+  type NotifyLevel,
+} from "./app/preferences";
 import type { AppRoute } from "./app/routes";
 import { useWindowChrome } from "./app/window";
 import {
@@ -31,7 +39,6 @@ import {
   type WorkspaceState,
 } from "./app/workspace";
 import { useInbox } from "./app/inbox-state";
-import { issueKey } from "./lib/inbox";
 import { resumeTelegramSetup } from "./lib/setup-machine";
 import TrayManager from "./components/TrayManager";
 import { Button, EmptyState, Sheet, SidebarItem, SidebarSection, UiLocale } from "./components/ui";
@@ -112,6 +119,7 @@ export default function App({ initialWorkspace }: { initialWorkspace?: Workspace
   const [boot, setBoot] = useState<Boot>(initialWorkspace ? { kind: "ready" } : { kind: "loading" });
   const [route, setRoute] = useState<AppRoute | null>(initialWorkspace ? initialRoute(initialWorkspace) : null);
   const [appearance, setAppearance] = useState<Appearance>("system");
+  const [notify, setNotify] = useState<NotifyLevel>("important");
   const [confirmStartOver, setConfirmStartOver] = useState(false);
   // The newest workspace, for updates that finish after an await (see updateWorkspace).
   const latest = useRef<WorkspaceState | null>(initialWorkspace ?? null);
@@ -167,6 +175,7 @@ export default function App({ initialWorkspace }: { initialWorkspace?: Workspace
       setAppearance(stored);
       applyAppearance(stored);
     });
+    void loadNotifyLevel().then(setNotify);
   }, []);
 
   useEffect(() => {
@@ -199,7 +208,7 @@ export default function App({ initialWorkspace }: { initialWorkspace?: Workspace
   }, [initialWorkspace]);
 
   const locale: Locale = workspace?.locale ?? preferredLocale();
-  const inbox = useInbox(workspace, locale);
+  const inbox = useInbox(workspace, locale, notify);
   useEffect(() => {
     document.documentElement.lang = locale;
   }, [locale]);
@@ -233,6 +242,11 @@ export default function App({ initialWorkspace }: { initialWorkspace?: Workspace
 
   // The menu bar, in the workspace's language. Settings sits in the app menu, so View lists the rest.
   const navigation = boot.kind === "ready" && !onboarding;
+
+  // An error picked in a notification or the menu bar opens in the inbox, wherever the window was.
+  useEffect(() => {
+    if (navigation && inbox.focus?.by === "user") setRoute({ kind: "inbox" });
+  }, [navigation, inbox.focus]);
   useEffect(() => {
     const items = destinations
       .filter((item) => item.kind !== "settings")
@@ -418,11 +432,7 @@ export default function App({ initialWorkspace }: { initialWorkspace?: Workspace
           />
         )}
         {route.kind === "inbox" && (
-          <InboxScreen
-            workspace={workspace}
-            inbox={inbox}
-            focusKey={inbox.lastAlert ? issueKey(inbox.lastAlert.sourceId, inbox.lastAlert.issue.id) : null}
-          />
+          <InboxScreen workspace={workspace} inbox={inbox} focus={inbox.focus} />
         )}
         {route.kind === "overview" && (
           <OverviewScreen
@@ -451,6 +461,11 @@ export default function App({ initialWorkspace }: { initialWorkspace?: Workspace
             onWorkspaceChange={changeWorkspace}
             appearance={appearance}
             onAppearanceChange={changeAppearance}
+            notify={notify}
+            onNotifyChange={(next) => {
+              setNotify(next);
+              void saveNotifyLevel(next);
+            }}
             onSetUpTelegram={() => {
               void commitWorkspace(resumeTelegramSetup(workspace)).then(
                 () => setRoute({ kind: "setup", stage: "server" }),

@@ -21,3 +21,22 @@ libc = "=0.2.189"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 security-framework = { version = "=3.7.0" }
+# The system notification centre (src/notifications.rs) and the inbox's heartbeat (src/heartbeat.rs).
+# Tauri already builds these versions.
+objc2 = { version = "=0.6.4" }
+objc2-foundation = { version = "=0.3.2", default-features = false, features = ["std", "NSArray", "NSError", "NSObject", "NSProcessInfo", "NSSet", "NSString"] }
+objc2-user-notifications = { version = "=0.3.2", default-features = false, features = [
+  "std",
+  "bitflags",
+  "block2",
+  "UNNotification",
+  "UNNotificationAction",
+  "UNNotificationCategory",
+  "UNNotificationContent",
+  "UNNotificationRequest",
+  "UNNotificationResponse",
+  "UNNotificationSound",
+  "UNNotificationTrigger",
+  "UNUserNotificationCenter",
+] }
+block2 = { version = "=0.6.2" }

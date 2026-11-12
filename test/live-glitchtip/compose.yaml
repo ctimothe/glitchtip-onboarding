@@ -1,0 +1,37 @@
+# A real GlitchTip on this machine, for trying the Companion against live data without touching a
+# production server. Loopback only. DEBUG and GLITCHTIP_BOOTSTRAP_DEV make GlitchTip create its own
+# development user, organization `org` and API token (64 times the letter d, a constant from
+# GlitchTip's source), so nothing here is a secret and nothing here may face a network.
+# Verified with Colima (Docker 29.5.2) and GlitchTip 6.2.0 on 2026-11-12.
+services:
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_HOST_AUTH_METHOD: trust
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "postgres"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+  valkey:
+    image: valkey/valkey:8
+  glitchtip:
+    image: glitchtip/glitchtip:6.2.0
+    command: ./bin/run-all-in-one.sh
+    depends_on:
+      postgres:
+        condition: service_healthy
+      valkey:
+        condition: service_started
+    ports:
+      - "127.0.0.1:${LIVE_GLITCHTIP_PORT:-8377}:8000"
+    environment:
+      DATABASE_URL: postgres://postgres:postgres@postgres:5432/postgres
+      VALKEY_URL: redis://valkey:6379
+      SECRET_KEY: local-only-not-a-secret
+      PORT: "8000"
+      DEBUG: "true"
+      GLITCHTIP_BOOTSTRAP_DEV: "true"
+      GLITCHTIP_DOMAIN: http://localhost:${LIVE_GLITCHTIP_PORT:-8377}
+      EMAIL_BACKEND: django.core.mail.backends.console.EmailBackend
+      ENABLE_ORGANIZATION_CREATION: "true"

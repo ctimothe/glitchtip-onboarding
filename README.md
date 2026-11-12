@@ -9,7 +9,7 @@ End-to-end GlitchTip observability: a JavaScript/TypeScript SDK, the Companion M
 | Path | What it is |
 |---|---|
 | `packages/sdk` | Publishable TypeScript package (`@glitchtip-onboarding/sdk`): Node.js and browser runtimes plus React, Next.js, Express, NestJS, and Fastify adapters |
-| `apps/desktop` | Companion, the Tauri macOS app: an inbox of open errors from every connected GlitchTip server, with notifications, resolve and ignore, plus setup for the optional Telegram relay |
+| `apps/desktop` | Companion, the Tauri macOS app: an inbox of open errors from every connected GlitchTip server that tells outages and bugs from noise and notifies for the real ones, with resolve and ignore, plus setup for the optional Telegram relay |
 | `assets/relay` | Companion relay: zero-dependency multi-project Telegram alert relay, with deploy files in `assets/relay/deploy` |
 | `assets/agent-skill` | Agent skill content and its tests |
 | `assets/` (other) | Provisioning and verification scripts (`glitchtip_onboard.py`, `verify.py`) and scrubbing templates |

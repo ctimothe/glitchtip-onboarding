@@ -8,8 +8,9 @@ Human-facing overview: `README.md`.
 GlitchTip observability end to end, in four parts:
 
 - **GlitchTip Companion** (`apps/desktop`): a macOS app in Tauri 2 (Rust) with a React 19 + Vite
-  window. Its inbox polls every connected GlitchTip server once a minute, notifies on new and
-  returning errors, and resolves or ignores them. Telegram alerts are optional: the app can deploy
+  window. Its inbox polls every connected GlitchTip server once a minute, reads each open error
+  for how real it is (outage, bug, flaky, expected, noise, not production), notifies on the real
+  ones, and resolves or ignores them. Telegram alerts are optional: the app can deploy
   the relay over SSH and pair a Telegram forum group. Secrets live in the macOS Keychain, owned by
   Rust (`apps/desktop/src-tauri/src/keychain.rs`).
 - **Relay** (`assets/relay`): a zero-dependency Node.js service that runs in Docker beside
@@ -32,6 +33,8 @@ npm run dev:frontend -w glitchtip-onboarding-desktop   # browser preview, mocked
 npm run build:debug -w glitchtip-onboarding-desktop    # unsigned local .app
 npm run fetch:node -w glitchtip-onboarding-desktop     # bundled Node.js for the relay; every build needs it
 bash test/companion-ssh-e2e/run.sh             # relay deploy over real SSH to a stand-in server (Docker, ~3 min)
+bash test/live-glitchtip/run.sh                # the inbox and its triage against a real GlitchTip (Docker, ~1 min); --keep leaves it on 127.0.0.1:8377
+bash test/live-glitchtip/app.sh                # a development copy of the app, with its own identity, connected to that server
 ```
 
 ## Definition of done
@@ -72,8 +75,18 @@ signed release exists (`apps/desktop/README.md`, "Release").
 - Every GlitchTip API call lives in `apps/desktop/src/lib/glitchtip.ts`. Reading stays GET-only;
   the only writes are resolve and ignore (`setIssueStatus`) and project setup
   (`provisionInventory`).
-- The inbox notifies only for errors never seen before and errors back after being resolved; the
-  first read of a server is the baseline and notifies nothing (`src/lib/inbox.ts`).
+- The inbox alerts for three things only: an error never seen before, one back after being
+  resolved, and a known open one whose priority rose. The first read of a server is the baseline
+  and alerts nothing (`src/lib/inbox.ts`). Which alerts notify is the Notifications setting; the
+  default is outages and bugs.
+- How real an error is comes from `classify` in `src/lib/triage.ts` and nowhere else: pure rules,
+  in a fixed order, every pattern with a test. No evidence means production, so a missing answer
+  never hides an error. A rule change is checked with `bash test/live-glitchtip/run.sh`.
+- What the inbox keeps between polls (`inbox.json`) holds issue ids, counts, timestamps and
+  yes/no signals, never event text, addresses or user ids.
+- A server address is HTTPS, or plain HTTP to this Mac itself (`acceptsToken` in
+  `src/app/workspace.ts`); the window's CSP allows the same and nothing wider.
+- A build under another bundle identifier keeps its own Keychain service (`keychain::service_for`).
 - Agent context is sanitized before it leaves the app (`src-tauri/src/helper.rs`); redaction rules
   have regression tests, and `scripts/security-scan` runs a canary corpus through every boundary.
 - Styles come from the semantic tokens at the top of `apps/desktop/src/styles.css` and the
@@ -90,8 +103,8 @@ signed release exists (`apps/desktop/README.md`, "Release").
 |---|---|
 | `apps/desktop/` | `apps/desktop/README.md`: features, scripts, release steps, Keychain layout, troubleshooting |
 | `apps/desktop/src/lib/` | the module's own `*.test.ts` |
-| `apps/desktop/src-tauri/` | `keychain.rs` before any secret work, `remote.rs` before SSH or deploy work |
+| `apps/desktop/src-tauri/` | `keychain.rs` before any secret work, `remote.rs` before SSH or deploy work, `notifications.rs` and `heartbeat.rs` before notification or polling work |
 | `assets/relay/` | `docs/operations/install.md` and `docs/operations/security.md` |
 | `packages/sdk/` | `docs/sdk/getting-started.md` |
 | `docs/operations/` | operator procedures; some are marked "not yet verified" until run on a live server |
-| `test/` | `companion-e2e` (Docker), `companion-ssh-e2e` (Docker, SSH), `security` (canary corpus) |
+| `test/` | `companion-e2e` (Docker), `companion-ssh-e2e` (Docker, SSH), `live-glitchtip` (Docker, a real GlitchTip and the error corpus), `security` (canary corpus) |
