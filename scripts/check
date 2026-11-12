@@ -8,6 +8,8 @@
 #   ./scripts/check lint test       run only the named steps
 #   CHECK_TIMEOUT=300 ./scripts/check   per-step timeout in seconds (default 900)
 #
+# Exit codes: 0 pass, 1 a step failed, 2 it could not run (dependencies not installed, or an unknown step name).
+#
 # Every step runs even after an earlier one fails, so one pass shows everything
 # that is broken. Full output per step lands in .check-logs/<step>.log.
 #
@@ -51,6 +53,18 @@ if [ "${#STEPS[@]}" -eq 0 ]; then
   printf 'Add steps to STEPS in scripts/check before treating this repo as verified.\n'
   exit 0
 fi
+
+# A step name that matches nothing is a mistake, not a pass.
+for arg in "$@"; do
+  known=""
+  for entry in "${STEPS[@]}"; do [ "${entry%%|*}" = "$arg" ] && known=1; done
+  if [ -z "$known" ]; then
+    printf '%sunknown step%s %s — the steps are:' "$R" "$N" "$arg"
+    for entry in "${STEPS[@]}"; do printf ' %s' "${entry%%|*}"; done
+    printf '\n'
+    exit 2
+  fi
+done
 
 # Preflight: a missing dependency tree is a setup problem, not a failing check.
 if [ -f package.json ] && [ ! -d node_modules ]; then
