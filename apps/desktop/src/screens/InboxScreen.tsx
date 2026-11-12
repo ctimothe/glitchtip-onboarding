@@ -1,5 +1,7 @@
-// The inbox: every connected GlitchTip server's open errors in one list, most recently seen first,
-// beside the selected error's latest event. Resolve and Ignore change the error in GlitchTip and
+// The inbox: every connected GlitchTip server's open errors in one list beside the selected
+// error's latest event. It opens on the errors that need attention (outages and bugs in
+// production, the most serious first); All shows every open error, most recently seen first, each
+// with how it was read (src/lib/triage.ts). Resolve and Ignore change the error in GlitchTip and
 // drop it from the list at once; the next poll confirms. Reads come from the inbox state
 // (src/app/inbox-state.ts); only the selected error's latest event is fetched here.
 
@@ -7,8 +9,8 @@ import { CircleCheck, Inbox, Plus, RotateCw } from "lucide-react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { useEffect, useMemo, useRef, useState } from "react";
 
-import type { InboxState } from "../app/inbox-state";
-import { inboxSources, type WorkspaceState } from "../app/workspace";
+import type { InboxFocus, InboxState } from "../app/inbox-state";
+import { acceptsToken, inboxSources, type WorkspaceState } from "../app/workspace";
 import {
   Button,
   CopyButton,
@@ -19,28 +21,37 @@ import {
   OptionList,
   OptionRow,
   PopupButton,
+  ScopeBar,
+  Tag,
   type OptionTone,
+  type TagTone,
 } from "../components/ui";
 import { t } from "../i18n";
 import { formatDateTime, formatRelative } from "../lib/format";
 import { issueUrl, latestEvent, setIssueStatus, type IssueEvent } from "../lib/glitchtip";
 import { inboxIssues, inboxProjects, issueKey } from "../lib/inbox";
 import * as secrets from "../lib/secrets";
+import { byAttention } from "../lib/tray-feed";
+import { needsAttention, type Priority } from "../lib/triage";
 import ConnectProjectSheet from "./ConnectProjectSheet";
 
 type EventState = { key: string } & ({ kind: "loading" } | { kind: "ready"; event: IssueEvent } | { kind: "failed"; detail: string });
 
-const LEVEL_TONE: Record<string, OptionTone> = { fatal: "error", error: "error", warning: "warning", info: "info" };
+const PRIORITY_TONE: Record<Priority, OptionTone> = { critical: "error", important: "warning", quiet: "neutral" };
+
+const TAG_TONE: Record<Priority, TagTone> = { critical: "error", important: "warning", quiet: "neutral" };
+
+type Scope = "attention" | "all";
 
 export default function InboxScreen({
   workspace,
   inbox,
-  focusKey,
+  focus,
 }: {
   workspace: WorkspaceState;
   inbox: InboxState;
-  /** An issue to select when it arrives, such as the one the latest notification named. */
-  focusKey?: string | null;
+  /** An issue to select when it arrives: the latest notification's, or one the user picked outside the window. */
+  focus?: InboxFocus | null;
 }) {
   const l = workspace.locale;
   const sources = inboxSources(workspace);
@@ -52,9 +63,14 @@ export default function InboxScreen({
   // A project that has no open errors left falls back to all of them.
   const [projectChoice, setProjectChoice] = useState("");
   const project = projects.some((p) => p.key === projectChoice) ? projectChoice : "";
-  const issues = useMemo(
+  const [scope, setScope] = useState<Scope>("attention");
+  const inProject = useMemo(
     () => (project === "" ? allIssues : allIssues.filter((issue) => issueKey(issue.sourceId, issue.project.id) === project)),
     [allIssues, project],
+  );
+  const issues = useMemo(
+    () => (scope === "all" ? inProject : inProject.filter((issue) => needsAttention(issue.triage)).sort(byAttention)),
+    [inProject, scope],
   );
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [event, setEvent] = useState<EventState | null>(null);
@@ -64,15 +80,20 @@ export default function InboxScreen({
   const [connecting, setConnecting] = useState(false);
   const rowRefs = useRef(new Map<string, HTMLButtonElement>());
 
-  // A notification's issue is selected once, when it is in the list; later polls leave the selection alone.
-  const appliedFocus = useRef<string | null>(null);
+  // A focused issue is selected once, when it is in the inbox, whatever the list is narrowed to;
+  // later polls leave the selection alone.
+  const appliedFocus = useRef<InboxFocus | null>(null);
   useEffect(() => {
-    if (!focusKey || focusKey === appliedFocus.current) return;
-    if (!allIssues.some((issue) => issue.key === focusKey)) return;
-    appliedFocus.current = focusKey;
-    if (!issues.some((issue) => issue.key === focusKey)) setProjectChoice("");
-    setSelectedKey(focusKey);
-  }, [focusKey, allIssues, issues]);
+    if (!focus || focus === appliedFocus.current) return;
+    const target = allIssues.find((issue) => issue.key === focus.key);
+    if (!target) return;
+    appliedFocus.current = focus;
+    if (!inProject.includes(target)) setProjectChoice("");
+    if (!needsAttention(target.triage)) setScope("all");
+    setSelectedKey(focus.key);
+    // A change asked for in a notification that did not happen is said here, beside the error.
+    setActionError(focus.error ?? null);
+  }, [focus, allIssues, inProject]);
 
   // An issue resolved or ignored here stays hidden until a successful poll that began after the
   // change: that poll no longer lists it, or lists it because GlitchTip reopened it on a new
@@ -165,6 +186,15 @@ export default function InboxScreen({
       : null;
   const polled = sources.some((s) => inbox.sources[s.id] !== undefined);
   const title = t(l, "nav.inbox");
+  // Open errors exist, none of them needs attention.
+  const calm = issues.length === 0 && inProject.length > 0;
+  const signals = selected?.signals ?? null;
+  // Events that name no environment (the `""` entry) are not listed.
+  const environments = Object.entries(signals?.environments ?? {})
+    .filter(([name]) => name !== "")
+    .sort((a, b) => b[1] - a[1])
+    .map(([name]) => name);
+  const people = selected ? Math.max(selected.userCount, signals?.users ?? 0) : 0;
 
   return (
     <section className="ui-page" aria-label={title}>
@@ -173,6 +203,15 @@ export default function InboxScreen({
           {title}
         </h1>
         <div className="ui-toolbar__actions">
+          <ScopeBar
+            label={t(l, "inbox.scope")}
+            value={scope}
+            onChange={setScope}
+            options={[
+              { value: "attention", label: t(l, "inbox.scope.attention") },
+              { value: "all", label: t(l, "inbox.scope.all") },
+            ]}
+          />
           {projects.length > 1 ? (
             <PopupButton
               label={t(l, "inbox.project")}
@@ -208,16 +247,26 @@ export default function InboxScreen({
               {failure}
             </InlineAlert>
           ))}
-          {issues.length === 0 ? (
+          {calm ? (
+            <EmptyState
+              icon={CircleCheck}
+              title={t(l, "inbox.calm")}
+              action={
+                <Button variant="secondary" onClick={() => setScope("all")}>
+                  {t(l, "inbox.showAll", { count: inProject.length })}
+                </Button>
+              }
+            />
+          ) : issues.length === 0 ? (
             polled ? <EmptyState icon={CircleCheck} title={t(l, "inbox.empty")} /> : null
           ) : (
             <OptionList label={t(l, "inbox.list")} onMove={move}>
               {issues.map((issue) => (
                 <OptionRow
                   key={issue.key}
-                  tone={LEVEL_TONE[issue.level] ?? "neutral"}
+                  tone={PRIORITY_TONE[issue.triage.priority]}
                   title={issue.title}
-                  meta={`${issue.project.name || issue.project.slug} · ${t(l, "inbox.events", { count: issue.count })} · ${formatRelative(issue.lastSeen, l)}`}
+                  meta={`${t(l, `triage.kind.${issue.triage.kind}`)} · ${issue.project.name || issue.project.slug} · ${formatRelative(issue.lastSeen, l)}`}
                   selected={issue.key === selected?.key}
                   onSelect={() => setSelectedKey(issue.key)}
                   buttonRef={(node) => {
@@ -231,12 +280,17 @@ export default function InboxScreen({
         </div>
         <div className="ui-split__detail">
           {selected === null ? (
-            <EmptyState icon={Inbox} title={t(l, issues.length === 0 ? "inbox.empty" : "inbox.noSelection")} />
+            calm ? null : <EmptyState icon={Inbox} title={t(l, issues.length === 0 ? "inbox.empty" : "inbox.noSelection")} />
           ) : (
             <div className="ui-page__content">
               <div className="ui-issue-head">
                 <h2 className="ui-issue-head__title">{selected.title}</h2>
                 {selected.culprit ? <p className="ui-issue-head__culprit">{selected.culprit}</p> : null}
+                <Tag
+                  tone={TAG_TONE[selected.triage.priority]}
+                  label={t(l, `triage.kind.${selected.triage.kind}`)}
+                  detail={selected.triage.reasons.map((reason) => t(l, `triage.reason.${reason}`)).join(" · ")}
+                />
                 <div className="ui-issue-head__actions">
                   <Button pending={acting === "resolved"} disabled={acting !== null} onClick={() => void change("resolved")}>
                     {t(l, "inbox.resolve")}
@@ -249,7 +303,7 @@ export default function InboxScreen({
                   >
                     {t(l, "inbox.ignore")}
                   </Button>
-                  {source && source.baseUrl.startsWith("https://") ? (
+                  {source && acceptsToken(source.baseUrl) ? (
                     <Button
                       variant="quiet"
                       onClick={() => void openUrl(issueUrl(source.baseUrl, source.organizationSlug, selected))}
@@ -269,8 +323,11 @@ export default function InboxScreen({
               ) : null}
               <FormSection>
                 <DetailRow label={t(l, "inbox.detail.project")}>{selected.project.name || selected.project.slug}</DetailRow>
+                {environments.length > 0 ? (
+                  <DetailRow label={t(l, "inbox.detail.environment")}>{environments.join(", ")}</DetailRow>
+                ) : null}
                 <DetailRow label={t(l, "inbox.detail.events")}>{selected.count}</DetailRow>
-                <DetailRow label={t(l, "inbox.detail.users")}>{selected.userCount}</DetailRow>
+                <DetailRow label={t(l, "inbox.detail.users")}>{people}</DetailRow>
                 <DetailRow label={t(l, "inbox.detail.firstSeen")}>{formatDateTime(selected.firstSeen, l)}</DetailRow>
                 <DetailRow label={t(l, "inbox.detail.lastSeen")}>{formatDateTime(selected.lastSeen, l)}</DetailRow>
                 {event?.key === selected.key && event.kind === "ready" && event.event.release ? (

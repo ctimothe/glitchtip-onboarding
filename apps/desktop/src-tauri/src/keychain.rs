@@ -26,6 +26,32 @@ use tauri::Manager;
 /// Keychain service shared by every Companion secret.
 pub const SERVICE: &str = "dev.ctimothe.glitchtip-companion";
 
+/// The released app's bundle identifier (`tauri.conf.json`).
+const RELEASE_IDENTIFIER: &str = "dev.ctimothe.glitchtip-onboarding";
+
+static ACTIVE_SERVICE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// The Keychain service of a build with this bundle identifier. A build under another identifier
+/// (a development copy, which also gets its own data folder) keeps its secrets apart, so it can
+/// neither read nor replace the tokens of the app the owner really uses.
+pub fn service_for(identifier: &str) -> String {
+    if identifier == RELEASE_IDENTIFIER {
+        SERVICE.to_string()
+    } else {
+        format!("{SERVICE}.{identifier}")
+    }
+}
+
+/// Fix this process's Keychain service from its bundle identifier. Called once, first thing in `main`.
+pub fn use_identifier(identifier: &str) {
+    let _ = ACTIVE_SERVICE.set(service_for(identifier));
+}
+
+/// The Keychain service this process reads and writes.
+pub fn service() -> &'static str {
+    ACTIVE_SERVICE.get().map(String::as_str).unwrap_or(SERVICE)
+}
+
 /// The v1 file vault, in the app config dir. Read only by the migration.
 pub const VAULT_FILE: &str = "secrets.json";
 
@@ -442,7 +468,7 @@ where
     T: Send + 'static,
     F: FnOnce(&dyn SecretStore) -> Result<T, SecretError> + Send + 'static,
 {
-    let joined = tauri::async_runtime::spawn_blocking(move || work(&MacKeychain::new(SERVICE))).await;
+    let joined = tauri::async_runtime::spawn_blocking(move || work(&MacKeychain::new(service()))).await;
     match joined {
         Ok(result) => result.map_err(|err| err.code().to_string()),
         Err(_) => Err(match access {
@@ -503,6 +529,19 @@ pub async fn secret_remove_file_vault(
 mod tests {
     use super::*;
     use std::collections::BTreeMap;
+
+    #[test]
+    fn only_the_released_identifier_uses_the_shared_service() {
+        assert_eq!(service_for("dev.ctimothe.glitchtip-onboarding"), SERVICE);
+        assert_eq!(
+            service_for("dev.ctimothe.glitchtip-onboarding.live"),
+            "dev.ctimothe.glitchtip-companion.dev.ctimothe.glitchtip-onboarding.live"
+        );
+        assert_ne!(service_for(""), SERVICE);
+        // A process that never named its identifier is the released app.
+        assert_eq!(service(), SERVICE);
+    }
+
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Mutex;

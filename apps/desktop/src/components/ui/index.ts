@@ -1,5 +1,5 @@
 export { Button } from "./Button";
-export { SegmentedControl, SwatchPicker } from "./Choice";
+export { ScopeBar, SegmentedControl, SwatchPicker } from "./Choice";
 export { CodeBlock, CopyButton } from "./Code";
 export { BlockRow, DetailRow, FormSection, ListRow } from "./Form";
 export { InlineAlert } from "./InlineAlert";
@@ -11,7 +11,7 @@ export { ServiceMark } from "./ServiceMark";
 export { UiLocale } from "./locale";
 export { Sheet } from "./Sheet";
 export { SidebarItem, SidebarSection } from "./Sidebar";
-export { StatusBadge, type Status } from "./StatusBadge";
+export { StatusBadge, Tag, type Status, type TagTone } from "./StatusBadge";
 export { Steps, type StepState } from "./Steps";
 export { TextArea } from "./TextArea";
 export { TextField } from "./TextField";

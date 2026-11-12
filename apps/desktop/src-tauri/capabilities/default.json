@@ -1,12 +1,13 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "v1 scopes + v2 relay daemon (launchctl only, relay log read + open-in-Console) + native window chrome (drag, zoom, theme) + menu bar commands (listen) + inbox notifications + open at login",
+  "description": "v1 scopes + v2 relay daemon (launchctl only, relay log read + open-in-Console) + native window chrome (drag, zoom, theme) + menu bar commands (listen) + inbox notifications, Dock badge + open at login",
   "windows": ["main"],
   "permissions": [
     "core:window:allow-start-dragging",
     "core:window:allow-internal-toggle-maximize",
     "core:window:allow-set-theme",
+    "core:window:allow-set-badge-count",
     "core:event:allow-listen",
     "core:event:allow-unlisten",
     {
@@ -56,7 +57,7 @@
     },
     {
       "identifier": "opener:allow-open-url",
-      "allow": [{ "url": "https://*" }]
+      "allow": [{ "url": "https://*" }, { "url": "http://localhost:*" }, { "url": "http://127.0.0.1:*" }]
     },
     "notification:default",
     "autostart:allow-enable",

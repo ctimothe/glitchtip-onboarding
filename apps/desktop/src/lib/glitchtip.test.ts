@@ -4,6 +4,8 @@ import {
   checkInstance,
   fetchInventory,
   issueUrl,
+  issueEvidence,
+  issueTags,
   latestEvent,
   projectDsn,
   listIssues,
@@ -957,7 +959,8 @@ const ISSUE = {
   userCount: 3,
   firstSeen: "2026-10-28T08:00:00Z",
   lastSeen: "2026-10-29T09:30:00Z",
-  project: { id: "7", slug: "storefront", name: "storefront" },
+  metadata: { type: "TypeError", value: "x is undefined", filename: "app/routes/case.ts", function: "load" },
+  project: { id: "7", slug: "storefront", name: "storefront", platform: "javascript-react" },
   // GlitchTip 6.2.0 builds this from the project slug, a page that does not exist; it is ignored.
   permalink: "https://errors.example.com/storefront/issues/42",
 };
@@ -987,8 +990,20 @@ describe("listIssues", () => {
         userCount: 3,
         firstSeen: "2026-10-28T08:00:00Z",
         lastSeen: "2026-10-29T09:30:00Z",
-        project: { id: "7", slug: "storefront", name: "storefront" },
+        errorType: "TypeError",
+        errorValue: "x is undefined",
+        project: { id: "7", slug: "storefront", name: "storefront", platform: "javascript-react" },
       },
+    ]);
+  });
+
+  it("leaves the exception empty for an issue that is a plain message", async () => {
+    const message = { ...ISSUE, title: "Retrying charge_invoice", metadata: {}, project: { id: "7", slug: "worker", name: "worker" } };
+    const { fetchFn } = recordingFetch(() => responseWithLink(200, [message, { ...message, id: "43", metadata: null }], null));
+    const page = await listIssues("https://errors.example.com", "tok", "acme", {}, fetchFn);
+    expect(page.issues.map((issue) => [issue.errorType, issue.errorValue, issue.project.platform])).toEqual([
+      ["", "", ""],
+      ["", "", ""],
     ]);
   });
 
@@ -1055,15 +1070,27 @@ describe("latestEvent", () => {
                 {
                   type: "TypeError",
                   value: "x is undefined",
+                  mechanism: { type: "onerror", handled: false },
                   stacktrace: {
                     frames: [
                       { filename: "node_modules/lib.js", function: "run", lineNo: 1, colNo: 2, inApp: false },
-                      { filename: "app/routes/case.ts", function: "load", lineNo: 42, colNo: 7, inApp: true },
+                      {
+                        filename: "/app/routes/case.js",
+                        absPath: "https://shop.example.com/app/routes/case.js",
+                        function: "load",
+                        lineNo: 42,
+                        colNo: 7,
+                        inApp: true,
+                      },
                     ],
                   },
                 },
               ],
             },
+          },
+          {
+            type: "request",
+            data: { url: "https://shop.example.com/cart", method: null, headers: [["Accept", "*/*"], ["User-Agent", "Mozilla/5.0 Safari"]] },
           },
         ],
       }),
@@ -1082,12 +1109,39 @@ describe("latestEvent", () => {
           type: "TypeError",
           value: "x is undefined",
           frames: [
-            { filename: "app/routes/case.ts", function: "load", lineNo: 42, colNo: 7, inApp: true },
-            { filename: "node_modules/lib.js", function: "run", lineNo: 1, colNo: 2, inApp: false },
+            {
+              filename: "/app/routes/case.js",
+              absPath: "https://shop.example.com/app/routes/case.js",
+              function: "load",
+              lineNo: 42,
+              colNo: 7,
+              inApp: true,
+            },
+            { filename: "node_modules/lib.js", absPath: "", function: "run", lineNo: 1, colNo: 2, inApp: false },
           ],
         },
       ],
+      handled: false,
+      request: { url: "https://shop.example.com/cart", userAgent: "Mozilla/5.0 Safari" },
     });
+  });
+
+  it("says nothing about handling or the request when the event carries neither", async () => {
+    const { fetchFn } = recordingFetch(() =>
+      jsonResponse(200, { eventID: "abc", entries: [{ type: "exception", data: { values: [{ type: "KeyError", value: "'id'" }] } }] }),
+    );
+    const event = await latestEvent("https://errors.example.com", "tok", "42", fetchFn);
+    expect(event.handled).toBeNull();
+    expect(event.request).toBeNull();
+  });
+
+  it("calls a chain a crash when any of its exceptions went uncaught", async () => {
+    const values = [
+      { type: "ValueError", value: "bad", mechanism: { type: "chained", handled: true } },
+      { type: "RuntimeError", value: "worse", mechanism: { type: "celery", handled: false } },
+    ];
+    const { fetchFn } = recordingFetch(() => jsonResponse(200, { eventID: "abc", entries: [{ type: "exception", data: { values } }] }));
+    expect((await latestEvent("https://errors.example.com", "tok", "42", fetchFn)).handled).toBe(false);
   });
 
   it("reads the release from its tag when the event has no release object, as GlitchTip 6.2.0 sends it", async () => {
@@ -1112,6 +1166,119 @@ describe("latestEvent", () => {
     await expect(latestEvent("https://errors.example.com", "tok", "42", fetchFn)).rejects.toThrow(
       "GET /api/0/issues/42/events/latest/ -> HTTP 404",
     );
+  });
+});
+
+// As GlitchTip 6.2.0 answers GET /api/0/issues/{id}/tags/ (read from a local server on 2026-11-12).
+const TAGS = [
+  { key: "browser.name", name: "browser.name", uniqueValues: 2, totalValues: 23, topValues: [{ name: "Mobile Safari", value: "Mobile Safari", count: 20, key: "browser.name" }, { name: "Chrome", value: "Chrome", count: 3, key: "browser.name" }] },
+  { key: "user.id", name: "user.id", uniqueValues: 17, totalValues: 23, topValues: [{ name: "u-1", value: "u-1", count: 2, key: "user.id" }] },
+  { key: "environment", name: "environment", uniqueValues: 2, totalValues: 23, topValues: [{ name: "production", value: "production", count: 21, key: "environment" }, { name: "staging", value: "staging", count: 2, key: "environment" }] },
+];
+
+describe("issueTags", () => {
+  it("reads each tag's distinct count and most frequent values", async () => {
+    const { fetchFn, calls } = recordingFetch(() => jsonResponse(200, [...TAGS, { key: 7 }, null]));
+    const tags = await issueTags("https://errors.example.com/", "tok", "16", fetchFn);
+    expect(calls[0].url).toBe("https://errors.example.com/api/0/issues/16/tags/");
+    expectGetOnly(calls);
+    expect(tags).toEqual([
+      { key: "browser.name", unique: 2, values: [{ value: "Mobile Safari", count: 20 }, { value: "Chrome", count: 3 }] },
+      { key: "user.id", unique: 17, values: [{ value: "u-1", count: 2 }] },
+      { key: "environment", unique: 2, values: [{ value: "production", count: 21 }, { value: "staging", count: 2 }] },
+    ]);
+  });
+
+  it("has no tags for a server without the endpoint, and throws when refused", async () => {
+    const missing = recordingFetch(() => jsonResponse(404, { detail: "Not found" }));
+    expect(await issueTags("https://errors.example.com", "tok", "16", missing.fetchFn)).toEqual([]);
+    const refused = recordingFetch(() => jsonResponse(401, {}));
+    await expect(issueTags("https://errors.example.com", "tok", "16", refused.fetchFn)).rejects.toThrow(
+      "GET /api/0/issues/16/tags/ -> HTTP 401",
+    );
+  });
+});
+
+describe("issueEvidence", () => {
+  const EVENT = {
+    eventID: "abc",
+    tags: [{ key: "environment", value: "staging" }],
+    entries: [
+      {
+        type: "exception",
+        data: {
+          values: [
+            { type: "Error", value: "outer cause", stacktrace: { frames: [{ filename: "a.js", inApp: true }] } },
+            {
+              type: "TypeError",
+              value: "x is undefined",
+              mechanism: { type: "onerror", handled: false },
+              stacktrace: {
+                frames: [
+                  { filename: "/framework.js", absPath: "https://shop.example.com/framework.js", inApp: false },
+                  { filename: "/content.js", absPath: "chrome-extension://abc/content.js", inApp: false },
+                ],
+              },
+            },
+          ],
+        },
+      },
+      { type: "request", data: { url: "https://shop.example.com/cart", headers: [["user-agent", "Mozilla/5.0 Safari"]] } },
+    ],
+  };
+
+  it("joins the latest event with the tag counts, reading only", async () => {
+    const { fetchFn, calls } = recordingFetch((url) => jsonResponse(200, url.endsWith("/tags/") ? TAGS : EVENT));
+    const evidence = await issueEvidence("https://errors.example.com", "tok", { id: "16", count: 23 }, fetchFn);
+    expect(calls.map((call) => new URL(call.url).pathname).sort()).toEqual([
+      "/api/0/issues/16/events/latest/",
+      "/api/0/issues/16/tags/",
+    ]);
+    expectGetOnly(calls);
+    expect(evidence).toEqual({
+      environments: [{ name: "production", count: 21 }, { name: "staging", count: 2 }],
+      browsers: [{ name: "Mobile Safari", count: 20 }, { name: "Chrome", count: 3 }],
+      users: 17,
+      handled: false,
+      userAgent: "Mozilla/5.0 Safari",
+      url: "https://shop.example.com/cart",
+      frames: [
+        { file: "chrome-extension://abc/content.js", inApp: false },
+        { file: "https://shop.example.com/framework.js", inApp: false },
+      ],
+    });
+  });
+
+  it("reports the events the environment tag does not account for as naming none", async () => {
+    const { fetchFn } = recordingFetch((url) => jsonResponse(200, url.endsWith("/tags/") ? TAGS : EVENT));
+    // Thirty events, twenty-three of them labelled: seven name no environment.
+    const evidence = await issueEvidence("https://errors.example.com", "tok", { id: "16", count: 30 }, fetchFn);
+    expect(evidence.environments).toEqual([
+      { name: "production", count: 21 },
+      { name: "staging", count: 2 },
+      { name: "", count: 7 },
+    ]);
+  });
+
+  it("counts a latest event without an environment even when every counted one is labelled", async () => {
+    const staging = [{ key: "environment", uniqueValues: 1, totalValues: 4, topValues: [{ value: "staging", count: 4 }] }];
+    const unlabelled = { ...EVENT, tags: [] };
+    const { fetchFn } = recordingFetch((url) => jsonResponse(200, url.endsWith("/tags/") ? staging : unlabelled));
+    const evidence = await issueEvidence("https://errors.example.com", "tok", { id: "16", count: 4 }, fetchFn);
+    expect(evidence.environments).toEqual([{ name: "staging", count: 4 }, { name: "", count: 1 }]);
+  });
+
+  it("knows only the latest event's environment when the server counts no tags, and says so", async () => {
+    const { fetchFn } = recordingFetch((url) => (url.endsWith("/tags/") ? jsonResponse(404, {}) : jsonResponse(200, EVENT)));
+    const evidence = await issueEvidence("https://errors.example.com", "tok", { id: "16", count: 5 }, fetchFn);
+    expect(evidence.environments).toEqual([{ name: "staging", count: 1 }, { name: "", count: 4 }]);
+    expect(evidence.users).toBe(0);
+    expect(evidence.browsers).toEqual([]);
+  });
+
+  it("fails when the event cannot be read", async () => {
+    const { fetchFn } = recordingFetch((url) => (url.endsWith("/tags/") ? jsonResponse(200, TAGS) : jsonResponse(500, {})));
+    await expect(issueEvidence("https://errors.example.com", "tok", { id: "16", count: 1 }, fetchFn)).rejects.toThrow("HTTP 500");
   });
 });
 

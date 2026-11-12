@@ -14,6 +14,7 @@ vi.mock("../lib/glitchtip", async (original) => ({
 }));
 
 import type { InboxState } from "../app/inbox-state";
+import type { Signals, Triage } from "../lib/triage";
 import { createWorkspace } from "../app/workspace";
 import * as glitchtip from "../lib/glitchtip";
 import type { Issue } from "../lib/glitchtip";
@@ -31,10 +32,16 @@ function issue(id: string, patch: Partial<Issue> = {}): Issue {
     userCount: 2,
     firstSeen: "2026-10-29T08:00:00Z",
     lastSeen: "2026-10-29T10:00:00Z",
-    project: { id: "1", slug: "web", name: "Acme web" },
+    errorType: "",
+    errorValue: "",
+    project: { id: "1", slug: "web", name: "Acme web", platform: "javascript" },
     ...patch,
   };
 }
+
+// Without a reading from the poller an issue counts as a production bug, which needs attention.
+const NOISE: Triage = { kind: "noise", priority: "quiet", reasons: ["scanner"] };
+const OUTAGE: Triage = { kind: "outage", priority: "critical", reasons: ["dependency-down"] };
 
 const workspace = {
   ...createWorkspace({
@@ -46,11 +53,16 @@ const workspace = {
   onboarding: { completedAt: "2026-10-29T00:00:00Z", currentStage: 6 as const },
 };
 
-function inbox(issues: Issue[], patch: Partial<InboxState> = {}, polledAt = Date.now()): InboxState {
+function inbox(
+  issues: Issue[],
+  patch: Partial<InboxState> = {},
+  polledAt = Date.now(),
+  read: { triage?: Record<string, Triage>; signals?: Record<string, Signals> } = {},
+): InboxState {
   return {
-    sources: { primary: { status: "ok", issues, polledAt } },
+    sources: { primary: { status: "ok", issues, triage: read.triage ?? {}, signals: read.signals ?? {}, polledAt } },
     unread: 0,
-    lastAlert: null,
+    focus: null,
     refresh: vi.fn(async () => {}),
     ...patch,
   };
@@ -66,9 +78,11 @@ const EVENT = {
     {
       type: "TypeError",
       value: "x is undefined",
-      frames: [{ filename: "app/routes/case.ts", function: "load", lineNo: 42, colNo: 7, inApp: true }],
+      frames: [{ filename: "app/routes/case.ts", absPath: "", function: "load", lineNo: 42, colNo: 7, inApp: true }],
     },
   ],
+  handled: false,
+  request: null,
 };
 
 afterEach(() => {
@@ -78,7 +92,7 @@ afterEach(() => {
 describe("inbox", () => {
   it("narrows the list to one project, and offers the filter only when there are several", async () => {
     vi.mocked(glitchtip.latestEvent).mockResolvedValue(EVENT);
-    const api = issue("2", { project: { id: "2", slug: "api", name: "Acme API" }, lastSeen: "2026-10-29T11:00:00Z" });
+    const api = issue("2", { project: { id: "2", slug: "api", name: "Acme API", platform: "node" }, lastSeen: "2026-10-29T11:00:00Z" });
     const { rerender } = render(<InboxScreen workspace={workspace} inbox={inbox([issue("1")])} />);
     expect(screen.queryByRole("combobox", { name: "Project" })).toBeNull();
     rerender(<InboxScreen workspace={workspace} inbox={inbox([issue("1"), api])} />);
@@ -147,7 +161,7 @@ describe("inbox", () => {
       <InboxScreen
         workspace={workspace}
         inbox={inbox([], {
-          sources: { primary: { status: "error", error: "token-missing", issues: [], polledAt: Date.now() } },
+          sources: { primary: { status: "error", error: "token-missing", issues: [], triage: {}, signals: {}, polledAt: Date.now() } },
         })}
       />,
     );
@@ -213,10 +227,85 @@ describe("inbox", () => {
   it("selects a notified error once, then leaves the selection to the owner", async () => {
     vi.mocked(glitchtip.latestEvent).mockResolvedValue(EVENT);
     const issues = [issue("1"), issue("2", { lastSeen: "2026-10-29T09:00:00Z" })];
-    const { rerender } = render(<InboxScreen workspace={workspace} inbox={inbox(issues)} focusKey="primary:2" />);
+    const focus = { key: "primary:2", by: "alert" as const };
+    const { rerender } = render(<InboxScreen workspace={workspace} inbox={inbox(issues)} focus={focus} />);
     expect(screen.getAllByRole("option")[1].getAttribute("aria-selected")).toBe("true");
     await userEvent.click(screen.getAllByRole("option")[0]);
-    rerender(<InboxScreen workspace={workspace} inbox={inbox([...issues])} focusKey="primary:2" />);
+    rerender(<InboxScreen workspace={workspace} inbox={inbox([...issues])} focus={focus} />);
     expect(screen.getAllByRole("option")[0].getAttribute("aria-selected")).toBe("true");
+    // The same error picked again, in the menu bar, is selected again.
+    rerender(<InboxScreen workspace={workspace} inbox={inbox([...issues])} focus={{ key: "primary:2", by: "user" }} />);
+    expect(screen.getAllByRole("option")[1].getAttribute("aria-selected")).toBe("true");
+  });
+
+  describe("triage", () => {
+    const titles = () => screen.getAllByRole("option").map((option) => option.querySelector(".ui-option__title")?.textContent);
+    const mixed = [
+      issue("1", { lastSeen: "2026-10-29T11:00:00Z" }),
+      issue("2", { lastSeen: "2026-10-29T10:00:00Z" }),
+      issue("3", { lastSeen: "2026-10-29T09:00:00Z" }),
+    ];
+    const read = { triage: { "1": NOISE, "3": OUTAGE } };
+
+    it("opens on what needs attention, the most serious first, and shows everything under All", async () => {
+      vi.mocked(glitchtip.latestEvent).mockResolvedValue(EVENT);
+      render(<InboxScreen workspace={workspace} inbox={inbox(mixed, {}, Date.now(), read)} />);
+      expect(screen.getByRole("radio", { name: "Needs attention" }).getAttribute("aria-checked")).toBe("true");
+      expect(titles()).toEqual(["Error 3", "Error 2"]);
+      await userEvent.click(screen.getByRole("radio", { name: "All" }));
+      expect(titles()).toEqual(["Error 1", "Error 2", "Error 3"]);
+    });
+
+    it("says how each error was read, in the list and beside the selected one", async () => {
+      vi.mocked(glitchtip.latestEvent).mockResolvedValue(EVENT);
+      const signals: Signals = {
+        environments: { staging: 2, production: 21 },
+        users: 17,
+        handled: false,
+        ownCode: true,
+        extension: false,
+        scanner: false,
+        bot: false,
+      };
+      render(<InboxScreen workspace={workspace} inbox={inbox(mixed, {}, Date.now(), { ...read, signals: { "3": signals } })} />);
+      const [outage, bug] = screen.getAllByRole("option");
+      expect(outage.querySelector(".ui-option__meta")?.textContent).toMatch(/^Outage · Acme web · /);
+      expect(outage.querySelector(".ui-option__dot")?.getAttribute("data-tone")).toBe("error");
+      expect(bug.querySelector(".ui-option__meta")?.textContent).toMatch(/^Bug · Acme web · /);
+      expect(bug.querySelector(".ui-option__dot")?.getAttribute("data-tone")).toBe("warning");
+      const detail = within(screen.getByRole("heading", { name: "Error 3" }).parentElement!);
+      expect(detail.getByText("Outage")).toBeTruthy();
+      expect(detail.getByText("A service it depends on is unreachable")).toBeTruthy();
+      // People come from the events when GlitchTip's own count is lower; environments by size.
+      expect(screen.getByText("production, staging")).toBeTruthy();
+      expect(screen.getByText("17")).toBeTruthy();
+    });
+
+    it("says when nothing needs attention and offers the rest", async () => {
+      vi.mocked(glitchtip.latestEvent).mockResolvedValue(EVENT);
+      const quiet = { triage: { "1": NOISE, "2": NOISE } };
+      render(<InboxScreen workspace={workspace} inbox={inbox(mixed.slice(0, 2), {}, Date.now(), quiet)} />);
+      expect(screen.getByText("Nothing needs attention")).toBeTruthy();
+      expect(screen.queryByRole("option")).toBeNull();
+      await userEvent.click(screen.getByRole("button", { name: "Show all 2" }));
+      expect(titles()).toEqual(["Error 1", "Error 2"]);
+      expect(screen.getByRole("radio", { name: "All" }).getAttribute("aria-checked")).toBe("true");
+    });
+
+    it("says why a change asked for in a notification did not happen", async () => {
+      vi.mocked(glitchtip.latestEvent).mockResolvedValue(EVENT);
+      const focus = { key: "primary:2", by: "user" as const, error: "PUT /api/0/organizations/acme/issues/2/ -> HTTP 403" };
+      render(<InboxScreen workspace={workspace} inbox={inbox(mixed, {}, Date.now(), read)} focus={focus} />);
+      expect(screen.getByRole("heading", { name: "Error 2" })).toBeTruthy();
+      expect(screen.getByText("Couldn't change the error: PUT /api/0/organizations/acme/issues/2/ -> HTTP 403")).toBeTruthy();
+    });
+
+    it("shows a focused error even when it is quiet", async () => {
+      vi.mocked(glitchtip.latestEvent).mockResolvedValue(EVENT);
+      const state = inbox(mixed, { focus: { key: "primary:1", by: "user" } }, Date.now(), read);
+      render(<InboxScreen workspace={workspace} inbox={state} focus={state.focus} />);
+      expect(screen.getByRole("radio", { name: "All" }).getAttribute("aria-checked")).toBe("true");
+      expect(screen.getByRole("heading", { name: "Error 1" })).toBeTruthy();
+    });
   });
 });

@@ -55,6 +55,30 @@ export function SegmentedControl<T extends string>({
   );
 }
 
+/** The same control in a toolbar: no visible label, as Finder's and Mail's scope bars have none. */
+export function ScopeBar<T extends string>({
+  label,
+  value,
+  onChange,
+  options,
+}: {
+  label: string;
+  value: T;
+  onChange: (value: T) => void;
+  options: Array<{ value: T; label: string }>;
+}) {
+  const { itemProps } = useRadioKeys(options.map((option) => option.value), value, onChange);
+  return (
+    <div role="radiogroup" aria-label={label} className="ui-segmented ui-segmented--toolbar">
+      {options.map((option, index) => (
+        <button key={option.value} type="button" className="ui-segmented__item" {...itemProps(index)}>
+          {option.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 /** Colour swatches, like the accent colour picker in System Settings. */
 export function SwatchPicker<T extends string>({
   label,

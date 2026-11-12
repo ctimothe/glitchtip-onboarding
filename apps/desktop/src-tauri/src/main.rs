@@ -2,8 +2,10 @@
 
 mod agent_install;
 mod app_menu;
+mod heartbeat;
 mod helper;
 mod keychain;
+mod notifications;
 mod remote;
 
 use std::collections::HashMap;
@@ -12,7 +14,7 @@ use std::path::PathBuf;
 
 use tauri::Manager;
 use tauri::image::Image;
-use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
+use tauri::menu::{IconMenuItem, Menu, MenuItem, NativeIcon, PredefinedMenuItem};
 use tauri::tray::TrayIconBuilder;
 use tauri_plugin_shell::ShellExt;
 
@@ -961,17 +963,31 @@ mod tests {
 // The tray icon is Rust-owned so `icons/tray.png` (a template image drawn from
 // `icons/tray.svg`) ships inside the binary (no resource-path lookup, no extra
 // capability scopes); macOS tints it for light and dark menu bars. The
-// frontend owns the feed: `TrayManager.tsx` pushes the inbox's open errors and
-// unread count through `tray_update`, and the inbox sends the notifications.
+// frontend owns the feed: `TrayManager.tsx` pushes the errors that need
+// attention and the unread count through `tray_update`, and the inbox sends
+// the notifications. A click on an error's row opens it in the window.
 
 const TRAY_ID: &str = "main";
 const TRAY_OPEN_ID: &str = "tray-open";
 const TRAY_QUIT_ID: &str = "tray-quit";
+/// An error's row carries its inbox key after this prefix.
+const TRAY_ISSUE_PREFIX: &str = "tray-issue:";
 
 #[derive(serde::Deserialize)]
 struct TrayAlertItem {
-    id: String,
+    /// The inbox key, `<server id>:<issue id>`.
+    key: String,
     text: String,
+    critical: bool,
+}
+
+/// Bring the window back in front; closing it only hides it.
+pub(crate) fn show_main_window(app: &tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.show();
+        let _ = window.unminimize();
+        let _ = window.set_focus();
+    }
 }
 
 /// The menu's fixed rows, in the workspace's language (the renderer owns translations).
@@ -985,15 +1001,15 @@ struct TrayLabels {
 impl Default for TrayLabels {
     fn default() -> Self {
         Self {
-            empty: "No open errors".into(),
+            empty: "Nothing needs attention".into(),
             open: "Open GlitchTip Companion".into(),
             quit: "Quit GlitchTip Companion".into(),
         }
     }
 }
 
-/// Rebuild the tray dropdown: the latest delivered alerts (disabled rows —
-/// chosen for reading, not clicking), then Open and Quit.
+/// Rebuild the tray dropdown: the errors that need attention, each behind the
+/// system's red or amber status dot, then Open and Quit.
 fn build_tray_menu<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     alerts: &[TrayAlertItem],
@@ -1010,11 +1026,17 @@ fn build_tray_menu<R: tauri::Runtime>(
         )?)?;
     } else {
         for item in alerts {
-            menu.append(&MenuItem::with_id(
+            let dot = if item.critical {
+                NativeIcon::StatusUnavailable
+            } else {
+                NativeIcon::StatusPartiallyAvailable
+            };
+            menu.append(&IconMenuItem::with_id_and_native_icon(
                 app,
-                item.id.as_str(),
+                format!("{TRAY_ISSUE_PREFIX}{}", item.key),
                 item.text.as_str(),
-                false,
+                true,
+                Some(dot),
                 None::<&str>,
             )?)?;
         }
@@ -1038,8 +1060,8 @@ fn build_tray_menu<R: tauri::Runtime>(
 }
 
 /// Push ticker state into the menubar icon. `title` is the unread badge
-/// (None clears it); `alerts` are the latest-first menu rows assembled by
-/// the frontend (at most 5) and `labels` its fixed rows. Every failure is plain English.
+/// (None clears it); `alerts` are the menu rows assembled by the frontend,
+/// most serious first (at most 5), and `labels` its fixed rows. Every failure is plain English.
 #[tauri::command]
 async fn tray_update(
     app: tauri::AppHandle,
@@ -1063,6 +1085,9 @@ async fn tray_update(
 }
 
 fn main() {
+    // A development copy (another bundle identifier) keeps its own Keychain items.
+    let context = tauri::generate_context!();
+    keychain::use_identifier(&context.config().identifier);
     // Started by the agent helper launcher: answer the context request and exit, with no window.
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.first().map(String::as_str) == Some(helper::LAUNCH_FLAG) {
@@ -1089,6 +1114,8 @@ fn main() {
             }
         })
         .setup(|app| {
+            notifications::install(app.handle());
+            heartbeat::start(app.handle());
             let menu = build_tray_menu(app.handle(), &[], &TrayLabels::default())?;
             let icon = Image::from_bytes(include_bytes!("../icons/tray.png"))?;
             TrayIconBuilder::with_id(TRAY_ID)
@@ -1097,14 +1124,13 @@ fn main() {
                 .tooltip("GlitchTip Companion")
                 .menu(&menu)
                 .on_menu_event(|app, event| match event.id.as_ref() {
-                    TRAY_OPEN_ID => {
-                        if let Some(window) = app.get_webview_window("main") {
-                            let _ = window.show();
-                            let _ = window.set_focus();
+                    TRAY_OPEN_ID => show_main_window(app),
+                    TRAY_QUIT_ID => app.exit(0),
+                    id => {
+                        if let Some(key) = id.strip_prefix(TRAY_ISSUE_PREFIX) {
+                            notifications::send_command(app, "open", key.to_string());
                         }
                     }
-                    TRAY_QUIT_ID => app.exit(0),
-                    _ => {}
                 })
                 .build(app)?;
             Ok(())
@@ -1119,6 +1145,9 @@ fn main() {
             relay_env_load,
             relay_env_save,
             tray_update,
+            notifications::notify_post,
+            notifications::inbox_commands_take,
+            notifications::window_show,
             app_menu::app_menu_update,
             keychain::secret_set,
             keychain::secret_get,
@@ -1137,15 +1166,12 @@ fn main() {
             agent_install::agent_install,
             agent_install::agent_verify
         ])
-        .build(tauri::generate_context!())
+        .build(context)
         .expect("error while building tauri application")
         .run(|app, event| {
             // Clicking the Dock icon brings back the window that Close hid.
             if let tauri::RunEvent::Reopen { .. } = event {
-                if let Some(window) = app.get_webview_window("main") {
-                    let _ = window.show();
-                    let _ = window.set_focus();
-                }
+                show_main_window(app);
             }
         });
 }

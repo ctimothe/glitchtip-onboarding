@@ -20,6 +20,29 @@ export async function loadAppearance(): Promise<Appearance> {
   }
 }
 
+/** Which inbox alerts become Mac notifications: outages and bugs in production, every new error, or none. */
+export type NotifyLevel = "important" | "all" | "off";
+
+const NOTIFY_LEVELS: NotifyLevel[] = ["important", "all", "off"];
+
+export async function loadNotifyLevel(): Promise<NotifyLevel> {
+  try {
+    const value = await store.get<unknown>("notify");
+    return NOTIFY_LEVELS.includes(value as NotifyLevel) ? (value as NotifyLevel) : "important";
+  } catch {
+    return "important";
+  }
+}
+
+export async function saveNotifyLevel(level: NotifyLevel): Promise<void> {
+  try {
+    await store.set("notify", level);
+    await store.save();
+  } catch {
+    // Applied for this session even when it cannot be remembered.
+  }
+}
+
 export async function saveAppearance(appearance: Appearance): Promise<void> {
   try {
     await store.set("appearance", appearance);
